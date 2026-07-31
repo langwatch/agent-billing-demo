@@ -1,5 +1,6 @@
 /**
- * Provision one tenant on LangWatch: the four calls a customer signup makes.
+ * Provision one tenant on LangWatch through the official TypeScript SDK
+ * (`langwatch`): the four calls a customer signup makes.
  *
  * 1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
  *    tenant's gateway credential, and every budget and spend row hangs off
@@ -22,6 +23,12 @@
  * Usage:
  *   pnpm provision -- --tenant "ACME Corp" [--register-webhook http://host:port/webhooks/langwatch]
  */
+import {
+  GatewayBudgetsApiService,
+  VirtualKeysApiService,
+  WebhooksApiService,
+} from "langwatch";
+
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
 const PROJECT_ID = process.env.LANGWATCH_PROJECT_ID ?? "";
@@ -30,83 +37,65 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${API_KEY}`,
-      // Provisioning routes are project-scoped: the API key authorizes,
-      // this header says which project the objects live under.
-      ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    throw new Error(`${path} answered ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json()) as T;
-}
+const virtualKeys = new VirtualKeysApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+  projectId: PROJECT_ID || undefined,
+});
+const budgets = new GatewayBudgetsApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+  projectId: PROJECT_ID || undefined,
+});
+const webhooks = new WebhooksApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+});
 
 export async function provisionTenant(name: string) {
-  const minted = await post<{
-    virtual_key: { id: string };
-    secret: string;
-  }>("/api/gateway/v1/virtual-keys", {
+  const minted = await virtualKeys.create({
     name,
     description: `Tenant key for ${name} (provisioned by acme-agents)`,
   });
   const vkId = minted.virtual_key.id;
 
-  const hardCap = await post<{ budget: { id: string } }>(
-    "/api/gateway/v1/budgets",
-    {
-      scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
-      name: `${name} hard cap`,
-      window: "MANUAL",
-      limit_usd: "5.00",
-      on_breach: "BLOCK",
-    },
-  );
+  const hardCap = await budgets.create({
+    scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
+    name: `${name} hard cap`,
+    window: "MANUAL",
+    limit_usd: "5.00",
+    on_breach: "BLOCK",
+  });
 
-  const softCap = await post<{ budget: { id: string } }>(
-    "/api/gateway/v1/budgets",
-    {
-      scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
-      name: `${name} soft cap`,
-      window: "MANUAL",
-      limit_usd: "2.50",
-      on_breach: "WARN",
-    },
-  );
+  const softCap = await budgets.create({
+    scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
+    name: `${name} soft cap`,
+    window: "MANUAL",
+    limit_usd: "2.50",
+    on_breach: "WARN",
+  });
 
-  const perUser = await post<{ budget: { id: string } }>(
-    "/api/gateway/v1/budgets",
-    {
-      scope: { kind: "ATTRIBUTED_USER", anchor_virtual_key_id: vkId },
-      name: `${name} per-user allowance`,
-      window: "MONTH",
-      limit_usd: "1.00",
-      on_breach: "BLOCK",
-    },
-  );
+  const perUser = await budgets.create({
+    scope: { kind: "ATTRIBUTED_USER", anchor_virtual_key_id: vkId },
+    name: `${name} per-user allowance`,
+    window: "MONTH",
+    limit_usd: "1.00",
+    on_breach: "BLOCK",
+  });
 
   return {
     virtualKeyId: vkId,
     virtualKeySecret: minted.secret,
-    hardCapBudgetId: hardCap.budget.id,
-    softCapBudgetId: softCap.budget.id,
-    perUserBudgetId: perUser.budget.id,
+    hardCapBudgetId: hardCap.id,
+    softCapBudgetId: softCap.id,
+    perUserBudgetId: perUser.id,
   };
 }
 
 export async function registerWebhookEndpoint(url: string) {
-  const created = await post<{
-    data: { id: string; secret: string };
-  }>("/api/webhooks/v1/endpoints", {
+  const created = await webhooks.create({
     url,
-    enabled_events: [
+    enabledEvents: [
       "gateway.request.completed",
       "gateway.request.settled",
       "gateway.budget.threshold_crossed",
@@ -115,7 +104,7 @@ export async function registerWebhookEndpoint(url: string) {
       "gateway.virtual_key.enabled",
     ],
   });
-  return { endpointId: created.data.id, secret: created.data.secret };
+  return { endpointId: created.id, secret: created.secret };
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;

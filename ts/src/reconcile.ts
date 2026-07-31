@@ -16,6 +16,8 @@ import { Ledger } from "./ledger.js";
  * unknown is not zero); the summary reports them in `settled_count`, which
  * is your reconciliation work queue, not your invoice.
  */
+import { SpendEventsApiService, type SpendSummaryRow } from "langwatch";
+
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
 if (!API_KEY) {
@@ -23,23 +25,12 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-async function api<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${API_KEY}` },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    throw new Error(`${path} answered ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json()) as T;
-}
+const spendEvents = new SpendEventsApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+});
 
-interface SummaryRow {
-  key: string;
-  event_count: number;
-  settled_count: number;
-  cost: { nano_usd: number };
-}
+type SummaryRow = SpendSummaryRow;
 
 async function walkRequestIds(params: {
   virtualKeyId: string;
@@ -47,21 +38,17 @@ async function walkRequestIds(params: {
   toMs: number;
 }): Promise<Set<string>> {
   const ids = new Set<string>();
-  let cursor: string | null = null;
+  let cursor: string | undefined;
   do {
-    const query = new URLSearchParams({
-      from: String(params.fromMs),
-      to: String(params.toMs),
-      virtual_key_id: params.virtualKeyId,
-      limit: "200",
+    const page = await spendEvents.list({
+      from: params.fromMs,
+      to: params.toMs,
+      virtualKeyId: params.virtualKeyId,
+      limit: 200,
+      cursor,
     });
-    if (cursor) query.set("cursor", cursor);
-    const page = await api<{
-      data: Array<{ data: { gateway_request_id: string } }>;
-      next_cursor: string | null;
-    }>(`/api/gateway/v1/spend-events?${query}`);
     for (const event of page.data) ids.add(event.data.gateway_request_id);
-    cursor = page.next_cursor;
+    cursor = page.next_cursor ?? undefined;
   } while (cursor);
   return ids;
 }
@@ -84,9 +71,11 @@ async function main() {
     ledger.totalsByVirtualKey(fromIso, toIso).map((r) => [r.virtual_key_id, r]),
   );
 
-  const summaries = await api<{ data: SummaryRow[] }>(
-    `/api/gateway/v1/spend-summaries?group_by=virtual_key&from=${fromMs}&to=${toMs}`,
-  );
+  const summaries = await spendEvents.summaries({
+    groupBy: "virtual_key",
+    from: fromMs,
+    to: toMs,
+  });
 
   let clean = true;
   for (const remote of summaries.data) {

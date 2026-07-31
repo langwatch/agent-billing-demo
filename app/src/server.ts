@@ -1,4 +1,8 @@
 import express from "express";
+import {
+  GatewayBudgetsApiService,
+  VirtualKeysApiService,
+} from "langwatch";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb, type Agent, type AppUser, type Customer } from "./db.js";
@@ -16,6 +20,17 @@ const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
 const PROJECT_ID = process.env.LANGWATCH_PROJECT_ID ?? "";
 
+const virtualKeys = new VirtualKeysApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+  projectId: PROJECT_ID || undefined,
+});
+const budgets = new GatewayBudgetsApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+  projectId: PROJECT_ID || undefined,
+});
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const db = openDb(path.join(here, "..", "app.sqlite"));
 const app = express();
@@ -28,39 +43,24 @@ app.post("/api/customers", async (req, res) => {
   const name = String(req.body.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "name is required" });
 
-  // Provisioning is the same four calls documented in ts/src/provision.ts;
-  // inlined here so signup is one readable handler.
-  const post = async (p: string, body: unknown) => {
-    const r = await fetch(`${BASE_URL}${p}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${API_KEY}`,
-        ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!r.ok) throw new Error(`${p} answered ${r.status}: ${await r.text()}`);
-    return r.json();
-  };
-
+  // Provisioning is the same four SDK calls documented in
+  // ts/src/provision.ts; inlined here so signup is one readable handler.
   try {
-    const minted = (await post("/api/gateway/v1/virtual-keys", {
+    const minted = await virtualKeys.create({
       name,
       description: `Tenant key for ${name} (acme-agents signup)`,
-    })) as { virtual_key: { id: string }; secret: string };
+    });
     const vkId = minted.virtual_key.id;
 
-    const hardCap = (await post("/api/gateway/v1/budgets", {
+    const hardCap = await budgets.create({
       scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
       name: `${name} hard cap`,
       window: "MANUAL",
       limit_usd: "5.00",
       on_breach: "BLOCK",
-    })) as { budget: { id: string } };
+    });
 
-    await post("/api/gateway/v1/budgets", {
+    await budgets.create({
       scope: { kind: "VIRTUAL_KEY", virtual_key_id: vkId },
       name: `${name} soft cap`,
       window: "MANUAL",
@@ -68,7 +68,7 @@ app.post("/api/customers", async (req, res) => {
       on_breach: "WARN",
     });
 
-    await post("/api/gateway/v1/budgets", {
+    await budgets.create({
       scope: { kind: "ATTRIBUTED_USER", anchor_virtual_key_id: vkId },
       name: `${name} per-user allowance`,
       window: "MONTH",
@@ -81,7 +81,7 @@ app.post("/api/customers", async (req, res) => {
         `INSERT INTO customers (name, virtual_key_id, virtual_key_secret, hard_cap_budget_id)
          VALUES (?, ?, ?, ?)`,
       )
-      .run(name, vkId, minted.secret, hardCap.budget.id);
+      .run(name, vkId, minted.secret, hardCap.id);
     res.status(201).json({ id: inserted.lastInsertRowid, name, virtual_key_id: vkId });
   } catch (error) {
     res.status(502).json({ error: String(error) });
@@ -229,23 +229,14 @@ app.post("/api/customers/:customerId/close-period", async (req, res) => {
   // Reset moves the MANUAL window's boundary. It never mutates recorded
   // spend: the ledger and every emitted event stay immutable, which is
   // why reconciliation is unaffected by period closes.
-  const r = await fetch(
-    `${BASE_URL}/api/gateway/v1/budgets/${customer.hard_cap_budget_id}/reset`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${API_KEY}`,
-        ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ reason: "acme-agents period close" }),
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  if (!r.ok) {
-    return res.status(502).json({ error: `reset answered ${r.status}` });
+  try {
+    await budgets.reset(customer.hard_cap_budget_id, {
+      reason: "acme-agents period close",
+    });
+    res.json({ closed: true });
+  } catch (error) {
+    res.status(502).json({ error: String(error) });
   }
-  res.json({ closed: true });
 });
 
 app.listen(PORT, () => {

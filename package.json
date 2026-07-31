@@ -10,5 +10,9 @@
     "provision:ts": "pnpm --filter @acme/integration-ts provision",
     "seed": "pnpm --filter @acme/app seed"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "dependencies": {
+    "@opentelemetry/context-async-hooks": "^2.0.1",
+    "@opentelemetry/sdk-node": "^0.203.0"
+  }
 }

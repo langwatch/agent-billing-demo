@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+import langwatch
 
 from ledger import Ledger
 
@@ -33,30 +33,22 @@ if not API_KEY:
     print("LANGWATCH_API_KEY is not set.")
     sys.exit(1)
 
-HEADERS = {"Authorization": f"Bearer {API_KEY}"}
-
-
-def api(path: str, params: dict | None = None) -> dict:
-    response = requests.get(
-        f"{BASE_URL}{path}", headers=HEADERS, params=params, timeout=30
-    )
-    response.raise_for_status()
-    return response.json()
+# The official python SDK: one setup, then the spend-events facade drives
+# both grains of the reconciliation.
+langwatch.setup(api_key=API_KEY, endpoint_url=BASE_URL, skip_open_telemetry_setup=True)
 
 
 def walk_request_ids(virtual_key_id: str, from_ms: int, to_ms: int) -> set[str]:
     ids: set[str] = set()
     cursor: str | None = None
     while True:
-        params = {
-            "from": from_ms,
-            "to": to_ms,
-            "virtual_key_id": virtual_key_id,
-            "limit": 200,
-        }
-        if cursor:
-            params["cursor"] = cursor
-        page = api("/api/gateway/v1/spend-events", params)
+        page = langwatch.spend_events.list(
+            from_ms=from_ms,
+            to_ms=to_ms,
+            virtual_key_id=virtual_key_id,
+            limit=200,
+            cursor=cursor,
+        )
         for event in page["data"]:
             ids.add(event["data"]["gateway_request_id"])
         cursor = page.get("next_cursor")
@@ -79,13 +71,12 @@ def main() -> int:
         for row in ledger.totals_by_virtual_key(from_iso, to_iso)
     }
 
-    summaries = api(
-        "/api/gateway/v1/spend-summaries",
-        {"group_by": "virtual_key", "from": from_ms, "to": to_ms},
+    summaries = langwatch.spend_events.summaries(
+        group_by="virtual_key", from_ms=from_ms, to_ms=to_ms
     )
 
     clean = True
-    for remote in summaries["data"]:
+    for remote in summaries:
         mine = local.get(remote["key"], {"event_count": 0, "cost_nano_usd": 0})
         match = (
             mine["event_count"] == remote["event_count"]

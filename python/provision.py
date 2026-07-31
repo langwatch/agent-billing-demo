@@ -1,4 +1,5 @@
-"""Provision one tenant on LangWatch: the four calls a customer signup makes.
+"""Provision one tenant on LangWatch through the official python SDK
+(``langwatch``): the four calls a customer signup makes.
 
 1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
    tenant's gateway credential, and every budget and spend row hangs off its
@@ -29,100 +30,72 @@ import json
 import os
 import sys
 
-import requests
+import langwatch
 
 BASE_URL = os.environ.get("LANGWATCH_BASE_URL", "http://localhost:5560")
 API_KEY = os.environ.get("LANGWATCH_API_KEY", "")
-PROJECT_ID = os.environ.get("LANGWATCH_PROJECT_ID", "")
 if not API_KEY:
     print("LANGWATCH_API_KEY is not set.")
     sys.exit(1)
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json",
-}
-# Provisioning routes are project-scoped: the API key authorizes, this
-# header says which project the objects live under.
-if PROJECT_ID:
-    HEADERS["X-Project-Id"] = PROJECT_ID
-
-
-def post(path: str, body: dict) -> dict:
-    response = requests.post(
-        f"{BASE_URL}{path}", headers=HEADERS, json=body, timeout=30
-    )
-    if not response.ok:
-        raise RuntimeError(f"{path} answered {response.status_code}: {response.text}")
-    return response.json()
+# The official python SDK: one setup, then the facades. The org key
+# authorizes; LANGWATCH_PROJECT_ID (read by the gateway_admin facade)
+# says which project provisioned objects live under.
+langwatch.setup(api_key=API_KEY, endpoint_url=BASE_URL, skip_open_telemetry_setup=True)
 
 
 def provision_tenant(name: str) -> dict:
-    minted = post(
-        "/api/gateway/v1/virtual-keys",
-        {
-            "name": name,
-            "description": f"Tenant key for {name} (provisioned by acme-agents)",
-        },
+    admin = langwatch.gateway_admin
+    minted = admin.create_virtual_key(
+        name=name,
+        description=f"Tenant key for {name} (provisioned by acme-agents)",
     )
     vk_id = minted["virtual_key"]["id"]
 
-    hard_cap = post(
-        "/api/gateway/v1/budgets",
-        {
-            "scope": {"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
-            "name": f"{name} hard cap",
-            "window": "MANUAL",
-            "limit_usd": "5.00",
-            "on_breach": "BLOCK",
-        },
+    hard_cap = admin.create_budget(
+        scope={"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
+        name=f"{name} hard cap",
+        window="MANUAL",
+        limit_usd="5.00",
+        on_breach="BLOCK",
     )
-    soft_cap = post(
-        "/api/gateway/v1/budgets",
-        {
-            "scope": {"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
-            "name": f"{name} soft cap",
-            "window": "MANUAL",
-            "limit_usd": "2.50",
-            "on_breach": "WARN",
-        },
+    soft_cap = admin.create_budget(
+        scope={"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
+        name=f"{name} soft cap",
+        window="MANUAL",
+        limit_usd="2.50",
+        on_breach="WARN",
     )
-    per_user = post(
-        "/api/gateway/v1/budgets",
-        {
-            "scope": {"kind": "ATTRIBUTED_USER", "anchor_virtual_key_id": vk_id},
-            "name": f"{name} per-user allowance",
-            "window": "MONTH",
-            "limit_usd": "1.00",
-            "on_breach": "BLOCK",
-        },
+    per_user = admin.create_budget(
+        scope={"kind": "ATTRIBUTED_USER", "anchor_virtual_key_id": vk_id},
+        name=f"{name} per-user allowance",
+        window="MONTH",
+        limit_usd="1.00",
+        on_breach="BLOCK",
     )
 
     return {
         "virtual_key_id": vk_id,
         "virtual_key_secret": minted["secret"],
-        "hard_cap_budget_id": hard_cap["budget"]["id"],
-        "soft_cap_budget_id": soft_cap["budget"]["id"],
-        "per_user_budget_id": per_user["budget"]["id"],
+        "hard_cap_budget_id": hard_cap["id"],
+        "soft_cap_budget_id": soft_cap["id"],
+        "per_user_budget_id": per_user["id"],
     }
 
 
 def register_webhook_endpoint(url: str) -> dict:
-    created = post(
-        "/api/webhooks/v1/endpoints",
-        {
-            "url": url,
-            "enabled_events": [
-                "gateway.request.completed",
-                "gateway.request.settled",
-                "gateway.budget.threshold_crossed",
-                "gateway.budget.breached",
-                "gateway.virtual_key.disabled",
-                "gateway.virtual_key.enabled",
-            ],
-        },
+    created = langwatch.webhooks.create(
+        url=url,
+        enabled_events=[
+            "gateway.request.completed",
+            "gateway.request.settled",
+            "gateway.budget.threshold_crossed",
+            "gateway.budget.breached",
+            "gateway.virtual_key.disabled",
+            "gateway.virtual_key.enabled",
+        ],
     )
-    return {"endpoint_id": created["data"]["id"], "secret": created["data"]["secret"]}
+    return {"endpoint_id": created["id"], "secret": created["secret"]}
 
 
 if __name__ == "__main__":

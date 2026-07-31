@@ -126,6 +126,34 @@ class Ledger:
             (from_iso, to_iso),
         ).fetchall()
 
+    def totals_by_end_user(self, virtual_key_id: str) -> list[dict]:
+        """Per end user for one tenant key: what the platform rebills.
+        Settled rows are counted but never summed (unknown is not zero)."""
+        rows = self.db.execute(
+            """
+            SELECT end_user_id,
+                   COUNT(*) AS request_count,
+                   COALESCE(SUM(CASE WHEN status != 'settled' THEN cost_nano_usd END), 0)
+                       AS cost_nano_usd,
+                   SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END)
+                       AS settled_count
+            FROM ledger
+            WHERE virtual_key_id = ?
+            GROUP BY end_user_id
+            ORDER BY cost_nano_usd DESC
+            """,
+            (virtual_key_id,),
+        ).fetchall()
+        return [
+            {
+                "end_user_id": row[0],
+                "request_count": row[1],
+                "cost_nano_usd": row[2],
+                "settled_count": row[3],
+            }
+            for row in rows
+        ]
+
     def request_ids(self, virtual_key_id: str, from_iso: str, to_iso: str) -> set[str]:
         rows = self.db.execute(
             "SELECT gateway_request_id FROM ledger"

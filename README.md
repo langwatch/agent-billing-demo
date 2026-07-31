@@ -6,8 +6,10 @@ customers, and it does so with **zero metering code of its own**. Everything
 hard is delegated to [LangWatch](https://langwatch.ai):
 
 - **Provisioning**: signing up a customer mints one virtual key (the tenant
-  boundary), a hard cap, a soft cap, and a per-end-user allowance, all over
-  REST with one org API key.
+  boundary), a hard cap, a soft cap, and a per-end-user allowance, through
+  the official LangWatch SDKs (TypeScript and Python) with one org API key.
+  (The SDKs are consumed from the local packages while these surfaces ship;
+  the dependencies flip to the published `langwatch` packages at release.)
 - **Request path**: the chat calls the gateway on the OpenAI wire with the
   `user` field set. That one field is all the attribution the whole billing
   pipeline needs.
@@ -27,11 +29,24 @@ every file is written to be copied from.
 ## Layout
 
 ```
-app/       the SaaS shell (TypeScript + Express): signup, agents, chat UI
-ts/        the integration surfaces in TypeScript
-python/    the SAME integration surfaces in Python
+app/       the SaaS shell (TypeScript + Express): signup, agents, chat UI (:4100)
+ts/        the integration surfaces in TypeScript (receiver on :4101)
+python/    the SAME integration surfaces in Python (receiver on :4102),
+           plus the SaaS shell again as one FastAPI process (:4200)
 scripts/   seed two fictional tenants
 ```
+
+Both app shells consume the official LangWatch SDK for their language:
+provisioning, budget resets, and reconciliation are SDK calls, never raw
+HTTP. Only the wire-contract modules (signature verification and the
+webhook receivers) stay dependency-free on purpose: they document the raw
+contract a consumer without an SDK implements.
+
+The python shell (`python/app.py`, FastAPI on :4200) is the same product
+as `app/` and hosts its own webhook receiver route, so the python stack
+runs end to end in one process: register
+`http://localhost:4200/webhooks/langwatch` as its endpoint and put the
+secret in `PY_APP_WEBHOOK_SECRET`.
 
 The integration surfaces exist twice on purpose, one per language, each
 self-contained:
@@ -43,6 +58,7 @@ self-contained:
 | Billing ledger | `ts/src/ledger.ts` | `python/ledger.py` |
 | Reconciliation | `ts/src/reconcile.ts` | `python/reconcile.py` |
 | Provisioning | `ts/src/provision.ts` | `python/provision.py` |
+| App shell | `app/` (Express, :4100) | `python/app.py` (FastAPI, :4200) |
 
 ## How a customer comes to exist
 

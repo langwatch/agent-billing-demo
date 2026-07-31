@@ -1,0 +1,14 @@
+{
+  "name": "acme-agents",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A tiny agent-platform SaaS that meters and rebills its customers through the LangWatch AI Gateway",
+  "scripts": {
+    "dev": "pnpm --filter @acme/app dev",
+    "receiver:ts": "pnpm --filter @acme/integration-ts receiver",
+    "reconcile:ts": "pnpm --filter @acme/integration-ts reconcile",
+    "provision:ts": "pnpm --filter @acme/integration-ts provision",
+    "seed": "pnpm --filter @acme/app seed"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

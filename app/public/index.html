@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ACME Agents</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1 { font-size: 1.4rem; }
+    section { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    label { display: block; font-size: 0.85rem; margin-top: 0.5rem; }
+    input, select, textarea { width: 100%; padding: 0.4rem; margin-top: 0.2rem; box-sizing: border-box; }
+    button { margin-top: 0.6rem; padding: 0.45rem 0.9rem; cursor: pointer; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.85rem; background: color-mix(in srgb, currentColor 6%, transparent); border-radius: 6px; padding: 0.8rem; min-height: 3rem; }
+    .error { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <h1>ACME Agents</h1>
+  <p>A tiny agent SaaS. Every chat below is metered, budgeted, and billed
+  through the LangWatch AI Gateway; this app carries no metering code.</p>
+
+  <section>
+    <h2>Customer</h2>
+    <label>Sign up a new customer
+      <input id="new-customer" placeholder="ACME Corp" />
+    </label>
+    <button onclick="signup()">Sign up</button>
+    <label>Active customer
+      <select id="customer" onchange="loadOverview()"></select>
+    </label>
+    <button onclick="closePeriod()">Close billing period (reset hard cap)</button>
+  </section>
+
+  <section>
+    <h2>Chat</h2>
+    <label>User <select id="user"></select></label>
+    <label>Agent <select id="agent"></select></label>
+    <label>Message <textarea id="message" rows="2">Say hello in five words.</textarea></label>
+    <button onclick="send()">Send</button>
+    <h3>Log</h3>
+    <div id="log"></div>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (text, isError) => {
+      const line = document.createElement("div");
+      line.textContent = text;
+      if (isError) line.className = "error";
+      $("log").prepend(line);
+    };
+
+    async function refreshCustomers() {
+      const res = await fetch("/api/customers");
+      const { customers } = await res.json();
+      $("customer").innerHTML = customers
+        .map((c) => `<option value="${c.id}">${c.name}</option>`)
+        .join("");
+      if (customers.length) await loadOverview();
+    }
+
+    async function loadOverview() {
+      const id = $("customer").value;
+      const res = await fetch(`/api/customers/${id}/overview`);
+      const { users, agents } = await res.json();
+      $("user").innerHTML = users
+        .map((u) => `<option value="${u.id}">${u.email}</option>`)
+        .join("");
+      $("agent").innerHTML = agents
+        .map((a) => `<option value="${a.id}">${a.name} (${a.model})</option>`)
+        .join("");
+    }
+
+    async function signup() {
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("new-customer").value }),
+      });
+      const body = await res.json();
+      log(res.ok ? `Signed up ${body.name} (VK ${body.virtual_key_id})` : body.error, !res.ok);
+      await refreshCustomers();
+    }
+
+    async function send() {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent_id: Number($("agent").value),
+          user_id: Number($("user").value),
+          message: $("message").value,
+        }),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        log(`agent: ${body.text} [request ${body.gatewayRequestId}]`);
+      } else {
+        log(`${res.status}: ${body.error}` + (body.budget_scope ? ` (scope: ${body.budget_scope})` : ""), true);
+      }
+    }
+
+    async function closePeriod() {
+      const id = $("customer").value;
+      const res = await fetch(`/api/customers/${id}/close-period`, { method: "POST" });
+      log(res.ok ? "Billing period closed; hard cap window reset." : "Reset failed.", !res.ok);
+    }
+
+    refreshCustomers();
+  </script>
+</body>
+</html>

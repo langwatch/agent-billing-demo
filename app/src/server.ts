@@ -14,6 +14,7 @@ import { chatAsTenant } from "./gateway.js";
 const PORT = Number(process.env.APP_PORT ?? 4100);
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
+const PROJECT_ID = process.env.LANGWATCH_PROJECT_ID ?? "";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const db = openDb(path.join(here, "..", "app.sqlite"));
@@ -34,6 +35,7 @@ app.post("/api/customers", async (req, res) => {
       method: "POST",
       headers: {
         Authorization: `Bearer ${API_KEY}`,
+        ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -202,8 +204,12 @@ function extractGatewayError(
     const inner = (parsed.error ?? parsed) as Record<string, unknown>;
     const code = inner.code ?? inner.type;
     if (typeof code !== "string") return null;
+    // The machine-readable detail (budget_scope, budget_id, ...) rides
+    // under error.meta on the gateway's wire.
     const meta: Record<string, string> = {};
-    for (const [key, value] of Object.entries(inner)) {
+    const metaSource =
+      typeof inner.meta === "object" && inner.meta !== null ? inner.meta : inner;
+    for (const [key, value] of Object.entries(metaSource)) {
       if (typeof value === "string") meta[key] = value;
     }
     return { code, meta };
@@ -229,6 +235,7 @@ app.post("/api/customers/:customerId/close-period", async (req, res) => {
       method: "POST",
       headers: {
         Authorization: `Bearer ${API_KEY}`,
+        ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ reason: "acme-agents period close" }),

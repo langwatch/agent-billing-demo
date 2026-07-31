@@ -33,6 +33,7 @@ import requests
 
 BASE_URL = os.environ.get("LANGWATCH_BASE_URL", "http://localhost:5560")
 API_KEY = os.environ.get("LANGWATCH_API_KEY", "")
+PROJECT_ID = os.environ.get("LANGWATCH_PROJECT_ID", "")
 if not API_KEY:
     print("LANGWATCH_API_KEY is not set.")
     sys.exit(1)
@@ -41,6 +42,10 @@ HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
 }
+# Provisioning routes are project-scoped: the API key authorizes, this
+# header says which project the objects live under.
+if PROJECT_ID:
+    HEADERS["X-Project-Id"] = PROJECT_ID
 
 
 def post(path: str, body: dict) -> dict:
@@ -117,7 +122,7 @@ def register_webhook_endpoint(url: str) -> dict:
             ],
         },
     )
-    return {"endpoint_id": created["endpoint"]["id"], "secret": created["secret"]}
+    return {"endpoint_id": created["data"]["id"], "secret": created["data"]["secret"]}
 
 
 if __name__ == "__main__":

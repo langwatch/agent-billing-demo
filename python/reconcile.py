@@ -16,6 +16,7 @@ is your reconciliation work queue, not your invoice.
 Run: ``python reconcile.py`` (needs LANGWATCH_API_KEY in the environment).
 """
 
+import argparse
 import os
 import sys
 import time
@@ -64,8 +65,11 @@ def walk_request_ids(virtual_key_id: str, from_ms: int, to_ms: int) -> set[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--minutes", type=int, default=24 * 60)
+    args = parser.parse_args()
     to_ms = int(time.time() * 1000)
-    from_ms = to_ms - 24 * 60 * 60 * 1000
+    from_ms = to_ms - args.minutes * 60 * 1000
     from_iso = datetime.fromtimestamp(from_ms / 1000, timezone.utc).isoformat()
     to_iso = datetime.fromtimestamp(to_ms / 1000, timezone.utc).isoformat()
 
@@ -104,7 +108,7 @@ def main() -> int:
             clean = False
             # Checksum diverged: find exactly which requests differ.
             remote_ids = walk_request_ids(remote["key"], from_ms, to_ms)
-            local_ids = ledger.request_ids(from_iso, to_iso)
+            local_ids = ledger.request_ids(remote["key"], from_iso, to_iso)
             for request_id in sorted(remote_ids - local_ids):
                 print(
                     f"  missing locally: {request_id}"

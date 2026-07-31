@@ -74,6 +74,11 @@ export class Ledger {
       .prepare("INSERT INTO seen_events (event_id, received_at) VALUES (?, ?)")
       .run(envelope.id, new Date().toISOString());
 
+    // Only the request families are money and belong in the ledger.
+    // Budget and lifecycle events are operational signals: deduped above,
+    // surfaced to the operator, never rows in the books.
+    if (!envelope.type.startsWith("gateway.request.")) return "ingested";
+
     const d = envelope.data;
     const requestId = String(d.gateway_request_id);
     const settled = envelope.type === "gateway.request.settled";
@@ -139,14 +144,16 @@ export class Ledger {
     }>;
   }
 
-  /** Every request id in a window, for the item-level diff. */
-  requestIds(fromIso: string, toIso: string): Set<string> {
+  /** One key's request ids in a window, for the item-level diff. */
+  requestIds(virtualKeyId: string, fromIso: string, toIso: string): Set<string> {
     const rows = this.db
       .prepare(
         `SELECT gateway_request_id FROM ledger
-         WHERE occurred_at >= ? AND occurred_at < ?`,
+         WHERE virtual_key_id = ? AND occurred_at >= ? AND occurred_at < ?`,
       )
-      .all(fromIso, toIso) as Array<{ gateway_request_id: string }>;
+      .all(virtualKeyId, fromIso, toIso) as Array<{
+      gateway_request_id: string;
+    }>;
     return new Set(rows.map((r) => r.gateway_request_id));
   }
 

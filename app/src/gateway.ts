@@ -29,13 +29,11 @@ export async function chatAsTenant(params: {
   });
 
   const result = await generateText({
-    model: gateway.chat(params.model),
+    // The second argument's `user` becomes the OpenAI `user` field on the
+    // wire; that one field is the whole attribution contract.
+    model: gateway.chat(params.model, { user: params.endUserId }),
     system: params.systemPrompt,
     prompt: params.userMessage,
-    providerOptions: {
-      // Becomes the OpenAI `user` field on the wire.
-      openai: { user: params.endUserId },
-    },
   });
 
   return {

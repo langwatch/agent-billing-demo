@@ -67,8 +67,13 @@ async function walkRequestIds(params: {
 }
 
 async function main() {
+  // --minutes N narrows the reconciled window (default: last 24 hours).
+  const args = process.argv.slice(2);
+  const minutesIndex = args.indexOf("--minutes");
+  const minutes =
+    minutesIndex >= 0 ? Number(args[minutesIndex + 1]) : 24 * 60;
   const toMs = Date.now();
-  const fromMs = toMs - 24 * 60 * 60 * 1000;
+  const fromMs = toMs - minutes * 60 * 1000;
   const fromIso = new Date(fromMs).toISOString();
   const toIso = new Date(toMs).toISOString();
 
@@ -108,7 +113,7 @@ async function main() {
         fromMs,
         toMs,
       });
-      const localIds = ledger.requestIds(fromIso, toIso);
+      const localIds = ledger.requestIds(remote.key, fromIso, toIso);
       const missingLocally = [...remoteIds].filter((id) => !localIds.has(id));
       const unknownRemotely = [...localIds].filter((id) => !remoteIds.has(id));
       for (const id of missingLocally) {

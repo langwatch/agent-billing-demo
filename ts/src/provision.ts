@@ -24,6 +24,7 @@
  */
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
+const PROJECT_ID = process.env.LANGWATCH_PROJECT_ID ?? "";
 if (!API_KEY) {
   console.error("LANGWATCH_API_KEY is not set.");
   process.exit(1);
@@ -34,6 +35,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: {
       Authorization: `Bearer ${API_KEY}`,
+      // Provisioning routes are project-scoped: the API key authorizes,
+      // this header says which project the objects live under.
+      ...(PROJECT_ID ? { "X-Project-Id": PROJECT_ID } : {}),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -99,8 +103,7 @@ export async function provisionTenant(name: string) {
 
 export async function registerWebhookEndpoint(url: string) {
   const created = await post<{
-    endpoint: { id: string };
-    secret: string;
+    data: { id: string; secret: string };
   }>("/api/webhooks/v1/endpoints", {
     url,
     enabled_events: [
@@ -112,7 +115,7 @@ export async function registerWebhookEndpoint(url: string) {
       "gateway.virtual_key.enabled",
     ],
   });
-  return { endpointId: created.endpoint.id, secret: created.secret };
+  return { endpointId: created.data.id, secret: created.data.secret };
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;

@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS ledger (
 
 class Ledger:
     def __init__(self, path: str):
-        self.db = sqlite3.connect(path)
+        # check_same_thread off: Flask serves each request on its own
+        # thread and this demo's writes are tiny and serialized by SQLite.
+        self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.executescript(SCHEMA)
 
     def ingest(self, envelope: dict) -> str:
@@ -55,6 +57,13 @@ class Ledger:
             "INSERT INTO seen_events (event_id, received_at) VALUES (?, ?)",
             (event_id, datetime.now(timezone.utc).isoformat()),
         )
+
+        # Only the request families are money and belong in the ledger.
+        # Budget and lifecycle events are operational signals: deduped
+        # above, surfaced to the operator, never rows in the books.
+        if not envelope["type"].startswith("gateway.request."):
+            self.db.commit()
+            return "ingested"
 
         data = envelope["data"]
         request_id = data["gateway_request_id"]
@@ -117,9 +126,10 @@ class Ledger:
             (from_iso, to_iso),
         ).fetchall()
 
-    def request_ids(self, from_iso: str, to_iso: str) -> set[str]:
+    def request_ids(self, virtual_key_id: str, from_iso: str, to_iso: str) -> set[str]:
         rows = self.db.execute(
-            "SELECT gateway_request_id FROM ledger WHERE occurred_at >= ? AND occurred_at < ?",
-            (from_iso, to_iso),
+            "SELECT gateway_request_id FROM ledger"
+            " WHERE virtual_key_id = ? AND occurred_at >= ? AND occurred_at < ?",
+            (virtual_key_id, from_iso, to_iso),
         ).fetchall()
         return {row[0] for row in rows}

@@ -1,4 +1,5 @@
 import express from "express";
+import { readFileSync } from "node:fs";
 import { verifySignature } from "./verify-signature.js";
 import { Ledger } from "./ledger.js";
 
@@ -25,6 +26,25 @@ if (!SECRET) {
 const ledger = new Ledger(new URL("../ledger.sqlite", import.meta.url).pathname);
 const app = express();
 
+/**
+ * Failure-drill switch, used by the QA runbook to exercise LangWatch's
+ * retry ladder against a misbehaving receiver:
+ *   - file contains "before": refuse with 503 before touching the ledger
+ *     (an outage; nothing ingested, the ladder retries the whole batch).
+ *   - file contains "after": ingest, then answer 503 anyway (an ack lost
+ *     after commit, the classic at-least-once duplicate source; the retry
+ *     must land as all-duplicates).
+ */
+const JAM_FILE = new URL("../jam", import.meta.url).pathname;
+const jamMode = (): "before" | "after" | null => {
+  try {
+    const mode = readFileSync(JAM_FILE, "utf8").trim();
+    return mode === "before" || mode === "after" ? mode : null;
+  } catch {
+    return null;
+  }
+};
+
 // The signature covers the raw bytes, so capture them before any parsing.
 app.use(express.raw({ type: "application/json", limit: "2mb" }));
 
@@ -40,12 +60,22 @@ app.post("/webhooks/langwatch", (req, res) => {
     return res.status(401).json({ error: "invalid signature" });
   }
 
+  const jam = jamMode();
+  if (jam === "before") {
+    console.warn("jammed (before ingest): refusing batch with 503");
+    return res.status(503).json({ error: "jammed" });
+  }
+
   const body = JSON.parse(rawBody.toString("utf8")) as {
     batch: Array<{ id: string; type: string; data: Record<string, unknown> }>;
   };
   for (const envelope of body.batch) {
     const outcome = ledger.ingest(envelope);
     console.log(`${envelope.type} ${envelope.id}: ${outcome}`);
+  }
+  if (jam === "after") {
+    console.warn("jammed (after ingest): dropping the ack with 503");
+    return res.status(503).json({ error: "jammed after commit" });
   }
   res.json({ received: body.batch.length });
 });

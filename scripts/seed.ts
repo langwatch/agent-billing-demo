@@ -1,11 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../app/src/db.js";
-import { provisionTenant } from "../ts/src/provision.js";
+import { provisionTenant } from "../app/src/langwatch.js";
 
 /**
- * Seed two fictional tenants, each with a user and an agent, provisioning
- * each one on LangWatch exactly like the signup flow does. Run once after
+ * Seed two fictional tenants, each with a seat and an agent, provisioning
+ * each one on LangWatch exactly like sign-up does. Run once after
  * `pnpm install`; needs LANGWATCH_API_KEY in the environment.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -14,12 +14,12 @@ const db = openDb(path.join(here, "..", "app", "app.sqlite"));
 const TENANTS = [
   {
     name: "ACME Corp",
-    user: "wile@acme.example",
+    seat: "wile@acme.example",
     agent: { name: "Support Bot", model: "openai/gpt-4o-mini" },
   },
   {
     name: "Globex Inc",
-    user: "hank@globex.example",
+    seat: "hank@globex.example",
     agent: { name: "Sales Bot", model: "openai/gpt-4o-mini" },
   },
 ];
@@ -33,28 +33,36 @@ for (const tenant of TENANTS) {
     continue;
   }
   const provisioned = await provisionTenant(tenant.name);
+  const now = new Date().toISOString();
   const customer = db
     .prepare(
-      `INSERT INTO customers (name, virtual_key_id, virtual_key_secret, hard_cap_budget_id)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO customers (
+         name, virtual_key_id, virtual_key_secret, hard_cap_budget_id,
+         soft_cap_budget_id, per_user_budget_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       tenant.name,
       provisioned.virtualKeyId,
       provisioned.virtualKeySecret,
       provisioned.hardCapBudgetId,
+      provisioned.softCapBudgetId,
+      provisioned.perUserBudgetId,
+      now,
     );
-  db.prepare("INSERT INTO users (customer_id, email) VALUES (?, ?)").run(
-    customer.lastInsertRowid,
-    tenant.user,
-  );
+  const customerId = Number(customer.lastInsertRowid);
   db.prepare(
-    "INSERT INTO agents (customer_id, name, system_prompt, model) VALUES (?, ?, ?, ?)",
+    "INSERT INTO seats (customer_id, email, created_at) VALUES (?, ?, ?)",
+  ).run(customerId, tenant.seat, now);
+  db.prepare(
+    `INSERT INTO agents (customer_id, name, system_prompt, model, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
   ).run(
-    customer.lastInsertRowid,
+    customerId,
     tenant.agent.name,
     "You are a helpful assistant. Keep answers short.",
     tenant.agent.model,
+    now,
   );
   console.log(
     `Seeded ${tenant.name}: VK ${provisioned.virtualKeyId}, hard cap ${provisioned.hardCapBudgetId}`,

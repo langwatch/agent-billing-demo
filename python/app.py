@@ -272,7 +272,7 @@ async def receive(request: Request) -> Dict[str, Any]:
     raw = await request.body()
     signature = request.headers.get("X-LangWatch-Signature", "")
     if not WEBHOOK_SECRET or not verify_signature(
-        secret=WEBHOOK_SECRET, signature_header=signature, body=raw
+        raw_body=raw, signature_header=signature, secret=WEBHOOK_SECRET
     ):
         raise HTTPException(401, "bad signature")
     batch = json.loads(raw).get("batch", [])

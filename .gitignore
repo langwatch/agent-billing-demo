@@ -8,3 +8,9 @@ __pycache__/
 .venv/
 *.sqlite-wal
 *.sqlite-shm
+
+# process logs
+*.log
+
+# local QA artifacts
+.qa/

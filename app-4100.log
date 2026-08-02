@@ -1,5 +1,0 @@
-
-> @acme/app@0.1.0 dev /Users/rchaves/Projects/langwatch/.claude/tmp/agent-billing-demo/app
-> tsx watch src/server.ts
-
-ACME Agents running on http://localhost:4100

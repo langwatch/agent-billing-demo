@@ -5,11 +5,11 @@
   "type": "module",
   "description": "The ACME Agents app shell: customers sign up, create agents, chat; LangWatch meters every call",
   "scripts": {
-    "dev": "tsx watch --env-file-if-exists=../.env src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
-    "seed": "tsx --env-file-if-exists=../.env ../scripts/seed.ts"
+    "seed": "tsx ../scripts/seed.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.3.0",

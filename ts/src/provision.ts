@@ -28,6 +28,7 @@ import {
   VirtualKeysApiService,
   WebhooksApiService,
 } from "langwatch";
+import "./env.js";
 
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";

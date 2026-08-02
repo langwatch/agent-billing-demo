@@ -25,6 +25,8 @@ Usage::
     python provision.py --register-webhook http://localhost:4102/webhooks/langwatch
 """
 
+import env  # noqa: F401  (loads .env before anything reads it)
+
 import argparse
 import json
 import os

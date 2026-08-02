@@ -18,6 +18,8 @@ Needs in the environment: LANGWATCH_API_KEY, LANGWATCH_PROJECT_ID,
 LANGWATCH_BASE_URL, LANGWATCH_GATEWAY_URL, PY_APP_WEBHOOK_SECRET.
 """
 
+import env  # noqa: F401  (loads .env before anything reads it)
+
 import json
 import os
 import sqlite3

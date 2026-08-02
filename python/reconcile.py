@@ -16,6 +16,8 @@ is your reconciliation work queue, not your invoice.
 Run: ``python reconcile.py`` (needs LANGWATCH_API_KEY in the environment).
 """
 
+import env  # noqa: F401  (loads .env before anything reads it)
+
 import argparse
 import os
 import sys

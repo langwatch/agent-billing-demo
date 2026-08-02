@@ -2,6 +2,7 @@ import express, { type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import "./env.js";
 import {
   openDb,
   type Agent,

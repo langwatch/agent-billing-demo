@@ -5,9 +5,9 @@
   "type": "module",
   "description": "TypeScript implementation of the LangWatch billing integration surfaces: webhook receiver, ledger, reconciliation, provisioning",
   "scripts": {
-    "receiver": "tsx --env-file-if-exists=../.env src/receiver.ts",
-    "reconcile": "tsx --env-file-if-exists=../.env src/reconcile.ts",
-    "provision": "tsx --env-file-if-exists=../.env src/provision.ts"
+    "receiver": "tsx src/receiver.ts",
+    "reconcile": "tsx src/reconcile.ts",
+    "provision": "tsx src/provision.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.0",

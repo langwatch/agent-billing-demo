@@ -13,6 +13,8 @@ idempotent ingest equals exactly-once accounting.
 Run: ``python receiver.py`` (needs PY_WEBHOOK_SECRET in the environment).
 """
 
+import env  # noqa: F401  (loads .env before anything reads it)
+
 import json
 import os
 import sys

@@ -7,7 +7,7 @@
     "build": "pnpm --filter @acme/app build",
     "dev": "pnpm --filter @acme/app dev",
     "dev:web": "pnpm --filter @acme/app dev:web",
-    "setup:webhook": "pnpm --filter @acme/app exec tsx --env-file-if-exists=../.env ../scripts/register-app-webhook.ts",
+    "setup:webhook": "pnpm --filter @acme/app exec tsx ../scripts/register-app-webhook.ts",
     "receiver:ts": "pnpm --filter @acme/integration-ts receiver",
     "reconcile:ts": "pnpm --filter @acme/integration-ts reconcile",
     "provision:ts": "pnpm --filter @acme/integration-ts provision",

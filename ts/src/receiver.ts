@@ -2,6 +2,7 @@ import express from "express";
 import { readFileSync } from "node:fs";
 import { verifySignature } from "./verify-signature.js";
 import { Ledger } from "./ledger.js";
+import "./env.js";
 
 /**
  * The webhook receiver: LangWatch POSTs signed batches of event envelopes

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import "../app/src/env.js";
 import { openDb } from "../app/src/db.js";
 import { provisionTenant } from "../app/src/langwatch.js";
 

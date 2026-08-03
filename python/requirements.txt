@@ -1,9 +1,8 @@
 flask>=3.0
-requests>=2.32
 fastapi>=0.115
 uvicorn[standard]>=0.30
 openai>=1.50
 # The official LangWatch python SDK. Local editable install while the
 # billing surfaces ship; flips to `langwatch>=<release>` at publish.
-# pip install -e ../../worktrees/billing-3b/python-sdk
+# pip install -e ../../worktrees/billing-events/python-sdk
 langwatch

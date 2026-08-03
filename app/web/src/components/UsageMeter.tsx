@@ -83,7 +83,9 @@ export function BudgetBar({
   budget: BudgetView;
   label?: string;
 }) {
-  const percent = Math.min(100, Math.max(0, budget.percent));
+  // No percentage without a spend figure: an empty bar beside a dash reads
+  // as "unknown", which is what it is.
+  const percent = Math.min(100, Math.max(0, budget.percent ?? 0));
   const tone =
     percent >= 100
       ? "bg-rose-500"

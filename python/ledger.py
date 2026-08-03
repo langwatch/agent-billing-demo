@@ -11,6 +11,11 @@ dollar), never floats. Two invariants, straight from the delivery contract:
   arrives later, it REPLACES the settled row for the same
   ``gateway_request_id``. A settled event arriving after a completion is
   ignored; the completion already carries the truth.
+
+Those two rules together are why repairing a gap needs ``backfill()`` rather
+than a redelivery: an event whose id is already in ``seen_events`` can never
+be ingested again, so re-sending it cannot put back a row that went missing
+after it was first seen.
 """
 
 import sqlite3
@@ -45,7 +50,7 @@ class Ledger:
         self.db.executescript(SCHEMA)
 
     def ingest(self, envelope: dict) -> str:
-        """Ingest one envelope; returns 'ingested', 'duplicate', or
+        """Ingest one delivered envelope; returns 'ingested', 'duplicate', or
         'superseded-noop' (a settled event arrived after its completion)."""
         event_id = envelope["id"]
         seen = self.db.execute(
@@ -53,10 +58,7 @@ class Ledger:
         ).fetchone()
         if seen:
             return "duplicate"
-        self.db.execute(
-            "INSERT INTO seen_events (event_id, received_at) VALUES (?, ?)",
-            (event_id, datetime.now(timezone.utc).isoformat()),
-        )
+        self._mark_seen(event_id)
 
         # Only the request families are money and belong in the ledger.
         # Budget and lifecycle events are operational signals: deduped
@@ -65,6 +67,38 @@ class Ledger:
             self.db.commit()
             return "ingested"
 
+        return "ingested" if self._write_row(envelope) else "superseded-noop"
+
+    def backfill(self, envelope: dict) -> str:
+        """Write one envelope PULLED from ``GET /api/gateway/v1/spend-events``,
+        bypassing the delivery dedup gate.
+
+        This is the repair path, and it exists because redelivery cannot
+        repair. A replayed envelope carries its original id, every receiver
+        dedups on ids forever, so replaying a window a receiver has already
+        seen is a guaranteed no-op no matter what is missing from the books.
+        Reconciliation therefore fetches the authoritative rows and writes
+        them here.
+
+        The supersede rule still holds: a pulled settled event never
+        overwrites a completion already on the row. Returns 'written' or
+        'superseded-noop'.
+        """
+        self._mark_seen(envelope["id"])
+        if not envelope["type"].startswith("gateway.request."):
+            self.db.commit()
+            return "superseded-noop"
+        return "written" if self._write_row(envelope) else "superseded-noop"
+
+    def _mark_seen(self, event_id: str) -> None:
+        self.db.execute(
+            "INSERT OR IGNORE INTO seen_events (event_id, received_at) VALUES (?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat()),
+        )
+
+    def _write_row(self, envelope: dict) -> bool:
+        """Upsert the money row for one request event. False when the write
+        was declined because a completion already answered this request."""
         data = envelope["data"]
         request_id = data["gateway_request_id"]
         settled = envelope["type"] == "gateway.request.settled"
@@ -77,7 +111,7 @@ class Ledger:
             ).fetchone()
             if existing and existing[0] != "settled":
                 self.db.commit()
-                return "superseded-noop"
+                return False
 
         usage = data.get("usage")
         cost = data.get("cost")
@@ -99,7 +133,7 @@ class Ledger:
             """,
             (
                 request_id,
-                event_id,
+                envelope["id"],
                 data.get("virtual_key_id") or "",
                 data.get("end_user_id"),
                 data.get("model"),
@@ -112,7 +146,7 @@ class Ledger:
             ),
         )
         self.db.commit()
-        return "ingested"
+        return True
 
     def totals_by_virtual_key(self, from_iso: str, to_iso: str) -> list[tuple]:
         """(virtual_key_id, event_count, cost_nano_usd) per key, settled excluded."""

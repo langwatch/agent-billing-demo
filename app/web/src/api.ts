@@ -109,19 +109,29 @@ export interface BudgetView {
   scope: string;
   window: string;
   on_breach: string;
-  limit_usd: number;
-  spend_usd: number;
-  percent: number;
+  /** Canonical integer figures, nano-USD. Null when the platform has none. */
+  limit_nano_usd: number | null;
+  spend_nano_usd: number | null;
+  /** Display figures, already converted server-side. Null stays null. */
+  limit_usd: number | null;
+  spend_usd: number | null;
+  percent: number | null;
   end_user_id?: string | null;
 }
 
 export interface LedgerTotals {
   requests: number;
+  cost_nano_usd: number;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
   awaiting_cost: number;
-  by_seat: Array<{ end_user_id: string; requests: number; cost_usd: number }>;
+  by_seat: Array<{
+    end_user_id: string;
+    requests: number;
+    cost_nano_usd: number;
+    cost_usd: number;
+  }>;
 }
 
 export interface UsageView {

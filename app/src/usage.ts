@@ -1,4 +1,5 @@
 import type { AppDatabase } from "./db.js";
+import { nanoToUsd, nanoToUsdOrNull } from "./money.js";
 import {
   loadBudgets,
   seatSpendSince,
@@ -18,20 +19,33 @@ export interface BudgetView {
   scope: string;
   window: string;
   on_breach: string;
-  limit_usd: number;
-  spend_usd: number;
-  percent: number;
+  /** Canonical integer figures. These are the money; sum and compare these. */
+  limit_nano_usd: number | null;
+  spend_nano_usd: number | null;
+  /** Display only, converted once at this boundary. Null stays null. */
+  limit_usd: number | null;
+  spend_usd: number | null;
+  /** Null when spend could not be totalled: no spend, no percentage. */
+  percent: number | null;
   end_user_id?: string | null;
 }
 
 export interface LedgerTotals {
   requests: number;
+  /** Canonical integer total, nano-USD: what an invoice would be built on. */
+  cost_nano_usd: number;
+  /** Display only, converted once at this boundary. */
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
   /** Requests delivered as `settled`: real traffic whose cost is not final. */
   awaiting_cost: number;
-  by_seat: Array<{ end_user_id: string; requests: number; cost_usd: number }>;
+  by_seat: Array<{
+    end_user_id: string;
+    requests: number;
+    cost_nano_usd: number;
+    cost_usd: number;
+  }>;
 }
 
 export interface UsageView {
@@ -43,8 +57,6 @@ export interface UsageView {
   source: "langwatch" | "ledger";
   degraded: string | null;
 }
-
-const NANO_PER_USD = 1_000_000_000;
 
 /**
  * The winning row per gateway request. Delivery is at-least-once and a
@@ -97,18 +109,28 @@ export function ledgerTotals(db: AppDatabase, virtualKeyId: string): LedgerTotal
     cost_nano_usd: number;
   }>;
 
+  // SQLite sums the nano-USD integers; the dollar figure is derived once,
+  // here, for the screen.
   return {
     requests: totals.requests,
-    cost_usd: totals.cost_nano_usd / NANO_PER_USD,
+    cost_nano_usd: totals.cost_nano_usd,
+    cost_usd: nanoToUsd(totals.cost_nano_usd),
     input_tokens: totals.input_tokens,
     output_tokens: totals.output_tokens,
     awaiting_cost: totals.awaiting_cost,
     by_seat: bySeat.map((row) => ({
       end_user_id: row.end_user_id,
       requests: row.requests,
-      cost_usd: row.cost_nano_usd / NANO_PER_USD,
+      cost_nano_usd: row.cost_nano_usd,
+      cost_usd: nanoToUsd(row.cost_nano_usd),
     })),
   };
+}
+
+/** Percent of an allowance used, from the integers. Null when unknowable. */
+function percentOf(spendNano: number | null, limitNano: number | null): number | null {
+  if (spendNano === null || limitNano === null || limitNano <= 0) return null;
+  return (spendNano / limitNano) * 100;
 }
 
 function toView(budget: BudgetSnapshot): BudgetView {
@@ -118,9 +140,11 @@ function toView(budget: BudgetSnapshot): BudgetView {
     scope: budget.scope_type,
     window: budget.window,
     on_breach: budget.on_breach,
-    limit_usd: budget.limit_usd,
-    spend_usd: budget.spent_usd,
-    percent: budget.limit_usd > 0 ? (budget.spent_usd / budget.limit_usd) * 100 : 0,
+    limit_nano_usd: budget.limit_nano_usd,
+    spend_nano_usd: budget.spent_nano_usd,
+    limit_usd: nanoToUsdOrNull(budget.limit_nano_usd),
+    spend_usd: nanoToUsdOrNull(budget.spent_nano_usd),
+    percent: percentOf(budget.spent_nano_usd, budget.limit_nano_usd),
   };
 }
 
@@ -156,8 +180,10 @@ export function usageFor(
   // the limit and the spend come from the platform, because that is the
   // figure the gateway enforces against; the local ledger is the fallback
   // when spend analytics are unavailable.
+  // Both maps are integer nano-USD, so the platform figure and the local
+  // fallback are the same unit and never silently mix scales.
   const ledgerBySeat = new Map(
-    ledger.by_seat.map((row) => [row.end_user_id, row.cost_usd] as const),
+    ledger.by_seat.map((row) => [row.end_user_id, row.cost_nano_usd] as const),
   );
   const spendBySeat = params.seatSpend ?? ledgerBySeat;
   // Which seats belong to this workspace is the app's own question: the
@@ -167,16 +193,18 @@ export function usageFor(
   const seatIds = new Set([...params.seats, ...ledgerBySeat.keys()].filter(Boolean));
   const perUserBudgets: BudgetView[] = template
     ? [...seatIds].map((seat) => {
-        const spend = spendBySeat.get(seat) ?? ledgerBySeat.get(seat) ?? 0;
+        const spendNano = spendBySeat.get(seat) ?? ledgerBySeat.get(seat) ?? 0;
         return {
           id: template.id,
           name: template.name,
           scope: template.scope_type,
           window: template.window,
           on_breach: template.on_breach,
-          limit_usd: template.limit_usd,
-          spend_usd: spend,
-          percent: template.limit_usd > 0 ? (spend / template.limit_usd) * 100 : 0,
+          limit_nano_usd: template.limit_nano_usd,
+          spend_nano_usd: spendNano,
+          limit_usd: nanoToUsdOrNull(template.limit_nano_usd),
+          spend_usd: nanoToUsd(spendNano),
+          percent: percentOf(spendNano, template.limit_nano_usd),
           end_user_id: seat,
         };
       })
@@ -213,9 +241,10 @@ export async function loadBudgetsOrDegrade(): Promise<{
 }
 
 /**
- * Per-seat spend for the oldest allowance period on screen, in one call.
- * Best effort: without it the meters fall back to the local ledger, which
- * is complete but only as fresh as the last webhook delivery.
+ * Per-seat spend for the oldest allowance period on screen, in one call, as
+ * integer nano-USD. Best effort: without it the meters fall back to the
+ * local ledger, which is complete but only as fresh as the last webhook
+ * delivery.
  */
 export async function loadSeatSpend(
   budgetData: BudgetsByKey | null,

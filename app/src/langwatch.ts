@@ -124,8 +124,14 @@ export interface BudgetSnapshot {
   scope_id: string;
   window: string;
   on_breach: string;
-  limit_usd: number;
-  spent_usd: number;
+  /** Canonical integer limit, nano-USD. Null past the safe integer range. */
+  limit_nano_usd: number | null;
+  /**
+   * Canonical integer spend, nano-USD. Null when the platform could not
+   * total spend for this period, which is not the same as zero and must not
+   * be rendered as a figure.
+   */
+  spent_nano_usd: number | null;
   current_period_started_at: string;
   resets_at: string;
 }
@@ -142,7 +148,11 @@ export interface BudgetsByKey {
 /**
  * One list call covers every tenant on screen, which is what the owner
  * console needs and what keeps a customer dashboard to a single round trip.
- * Money arrives as decimal strings and is parsed once, here.
+ * `list()` walks the cursor to exhaustion, so this is the complete set of
+ * caps and not a first page.
+ *
+ * Money is taken as the integer nano-USD fields the rows carry, never parsed
+ * out of the decimal display strings beside them.
  */
 export async function loadBudgets(): Promise<BudgetsByKey> {
   const response = await budgets.list();
@@ -157,8 +167,8 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
       scope_id: budget.scope_id,
       window: budget.window,
       on_breach: budget.on_breach,
-      limit_usd: Number(budget.limit_usd),
-      spent_usd: Number(budget.spent_usd),
+      limit_nano_usd: budget.limit_nano_usd,
+      spent_nano_usd: budget.spent_nano_usd,
       current_period_started_at: budget.current_period_started_at,
       resets_at: budget.resets_at,
     };
@@ -182,7 +192,7 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
   for (const list of perKey.values()) {
     list.sort((left, right) => {
       if (left.on_breach !== right.on_breach) return left.on_breach === "block" ? -1 : 1;
-      return right.limit_usd - left.limit_usd;
+      return (right.limit_nano_usd ?? 0) - (left.limit_nano_usd ?? 0);
     });
   }
 
@@ -204,14 +214,19 @@ export function setBudgetLimit(budgetId: string, limitUsd: string) {
 }
 
 /**
- * Spend per end user for the current allowance period, in one call.
+ * Spend per end user for the current allowance period, in one call, as
+ * integer nano-USD.
  *
  * The per-seat allowance is what the gateway enforces, so the meter has to
  * render the platform's own figure. Reading it from the local webhook
  * ledger instead would let a seat sit at "37% used" on screen while the
  * gateway is already refusing its requests.
+ *
+ * Windows are epoch milliseconds on every spend route.
  */
-export async function seatSpendSince(fromIso: string): Promise<Map<string, number>> {
+export async function seatSpendSince(
+  fromIso: string,
+): Promise<Map<string, number>> {
   const from = new Date(fromIso).getTime();
   const summaries = await spendEvents.summaries({
     groupBy: "end_user",
@@ -219,9 +234,7 @@ export async function seatSpendSince(fromIso: string): Promise<Map<string, numbe
     to: Date.now(),
     limit: 1000,
   });
-  return new Map(
-    summaries.data.map((row) => [row.key, row.cost.nano_usd / 1_000_000_000] as const),
-  );
+  return new Map(summaries.data.map((row) => [row.key, row.cost.nano_usd] as const));
 }
 
 export interface ReceiverStatus {

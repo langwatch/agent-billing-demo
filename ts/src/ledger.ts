@@ -14,7 +14,23 @@ import Database from "better-sqlite3";
  *   completion arrives later, it REPLACES the settled row for the same
  *   `gateway_request_id`. A settled event arriving after a completion is
  *   ignored; the completion already carries the truth.
+ *
+ * Those two rules together are why repairing a gap needs `backfill()` rather
+ * than a redelivery: an event whose id is already in `seen_events` can never
+ * be ingested again, so re-sending it cannot put back a row that went
+ * missing after it was first seen.
  */
+/**
+ * One event envelope, as delivered by a webhook or pulled from
+ * `GET /api/gateway/v1/spend-events`. Both surfaces carry the identical
+ * canonical object, which is what lets the pull API repair the books.
+ */
+export interface LedgerEnvelope {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
 export interface LedgerRow {
   gateway_request_id: string;
   event_id: string;
@@ -57,28 +73,56 @@ export class Ledger {
   }
 
   /**
-   * Ingest one envelope. Returns what happened, which the receiver logs:
-   * "ingested", "duplicate" (dedup hit), or "superseded-noop" (a settled
-   * event arrived after the completion it would have flagged).
+   * Ingest one delivered envelope. Returns what happened, which the receiver
+   * logs: "ingested", "duplicate" (dedup hit), or "superseded-noop" (a
+   * settled event arrived after the completion it would have flagged).
    */
-  ingest(envelope: {
-    id: string;
-    type: string;
-    data: Record<string, unknown>;
-  }): "ingested" | "duplicate" | "superseded-noop" {
+  ingest(envelope: LedgerEnvelope): "ingested" | "duplicate" | "superseded-noop" {
     const seen = this.db
       .prepare("SELECT 1 FROM seen_events WHERE event_id = ?")
       .get(envelope.id);
     if (seen) return "duplicate";
-    this.db
-      .prepare("INSERT INTO seen_events (event_id, received_at) VALUES (?, ?)")
-      .run(envelope.id, new Date().toISOString());
+    this.markSeen(envelope.id);
 
     // Only the request families are money and belong in the ledger.
     // Budget and lifecycle events are operational signals: deduped above,
     // surfaced to the operator, never rows in the books.
     if (!envelope.type.startsWith("gateway.request.")) return "ingested";
+    return this.writeRow(envelope) ? "ingested" : "superseded-noop";
+  }
 
+  /**
+   * Write one envelope PULLED from `GET /api/gateway/v1/spend-events`,
+   * bypassing the delivery dedup gate.
+   *
+   * This is the repair path, and it exists because redelivery cannot repair.
+   * A replayed envelope carries its original id, every receiver dedups on
+   * ids forever, so replaying a window a receiver has already seen is a
+   * guaranteed no-op no matter what is missing from the books. Reconciliation
+   * therefore fetches the authoritative rows and writes them here.
+   *
+   * The supersede rule still holds: a pulled settled event never overwrites a
+   * completion already on the row. Returns whether a row was written.
+   */
+  backfill(envelope: LedgerEnvelope): "written" | "superseded-noop" {
+    this.markSeen(envelope.id);
+    if (!envelope.type.startsWith("gateway.request.")) return "superseded-noop";
+    return this.writeRow(envelope) ? "written" : "superseded-noop";
+  }
+
+  private markSeen(eventId: string) {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO seen_events (event_id, received_at) VALUES (?, ?)",
+      )
+      .run(eventId, new Date().toISOString());
+  }
+
+  /**
+   * Upsert the money row for one request event. False when the write was
+   * declined because a completion already answered this request.
+   */
+  private writeRow(envelope: LedgerEnvelope): boolean {
     const d = envelope.data;
     const requestId = String(d.gateway_request_id);
     const settled = envelope.type === "gateway.request.settled";
@@ -88,7 +132,7 @@ export class Ledger {
       const existing = this.db
         .prepare("SELECT status FROM ledger WHERE gateway_request_id = ?")
         .get(requestId) as { status: string } | undefined;
-      if (existing && existing.status !== "settled") return "superseded-noop";
+      if (existing && existing.status !== "settled") return false;
     }
 
     const usage = d.usage as Record<string, number> | null;
@@ -122,7 +166,7 @@ export class Ledger {
         d.needs_reconciliation === true ? 1 : 0,
         String(d.occurred_at),
       );
-    return "ingested";
+    return true;
   }
 
   /** Per-virtual-key totals over a window, for reconciliation checksums. */

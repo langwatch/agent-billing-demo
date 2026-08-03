@@ -30,6 +30,7 @@ import {
   setBudgetLimit,
   virtualKeys,
 } from "./langwatch.js";
+import { nanoToUsd, nanoToUsdOrNull } from "./money.js";
 import { loadBudgetsOrDegrade, loadSeatSpend, usageFor } from "./usage.js";
 import {
   DELIVERY_ID_HEADER,
@@ -564,12 +565,20 @@ app.get("/api/admin/overview", async (_req, res) => {
       console.error("[langwatch:webhooks.list]", error);
     }
 
+    // Totalled over the nano-USD integers and converted once: adding the
+    // per-tenant dollar figures instead would drift from the platform's own
+    // total by a little more with every tenant.
+    const totalNanoUsd = rows.reduce(
+      (sum, row) => sum + row.usage.ledger.cost_nano_usd,
+      0,
+    );
     res.json({
       customers: rows,
       totals: {
         customers: rows.length,
         requests: rows.reduce((sum, row) => sum + row.usage.ledger.requests, 0),
-        cost_usd: rows.reduce((sum, row) => sum + row.usage.ledger.cost_usd, 0),
+        cost_nano_usd: totalNanoUsd,
+        cost_usd: nanoToUsd(totalNanoUsd),
         events: eventCount.count,
       },
       receiver,
@@ -644,8 +653,14 @@ app.post("/api/customers/:customerId/budgets/:budgetId/limit", async (req, res) 
       throw badRequest("limit_invalid", "Enter a limit greater than zero.");
     }
     try {
+      // The limit crosses as a decimal string, which is how the API takes an
+      // amount; what comes back is read as the canonical integer.
       const updated = await setBudgetLimit(budgetId, limit.toFixed(6));
-      res.json({ budget_id: updated.id, limit_usd: Number(updated.limit_usd) });
+      res.json({
+        budget_id: updated.id,
+        limit_nano_usd: updated.limit_nano_usd,
+        limit_usd: nanoToUsdOrNull(updated.limit_nano_usd),
+      });
     } catch (error) {
       throw upstreamError("update the cap", error);
     }
@@ -795,7 +810,8 @@ function presentEvent(row: BillingEvent, names = customerNameByKey()) {
     // A rejected request bills nothing, so the reason it was rejected is
     // the only useful figure on that row.
     error_class: payload.data?.error?.class ?? null,
-    cost_usd: row.cost_nano_usd === null ? null : row.cost_nano_usd / 1_000_000_000,
+    cost_nano_usd: row.cost_nano_usd,
+    cost_usd: nanoToUsdOrNull(row.cost_nano_usd),
     occurred_at: row.occurred_at,
     received_at: row.received_at,
     payload: payload as unknown,

@@ -242,8 +242,12 @@ export function Avatar({ name, className }: { name: string; className?: string }
  * Money, at a precision that stays readable across four orders of
  * magnitude: a $5.00 cap keeps two decimals, a fraction of a cent keeps
  * enough digits to stay a number instead of rounding away to $0.00.
+ *
+ * Null is a figure the platform does not have, which renders as a dash. It
+ * must never render as $0.00: a reader takes that for real money.
  */
-export function money(value: number, digits?: number) {
+export function money(value: number | null, digits?: number) {
+  if (value === null) return "—";
   if (digits !== undefined) return `$${value.toFixed(digits)}`;
   const magnitude = Math.abs(value);
   if (magnitude === 0) return "$0.00";

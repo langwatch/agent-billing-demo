@@ -30,11 +30,9 @@ TODO-VALIDATE: delete a row from python/ledger.sqlite, run this, and confirm
 the walk names that request, backfills it, and re-reads the checksum as
 RECONCILED with exit code 0.
 
-TODO-VALIDATE: ``/spend-summaries`` is cursor-paginated on the wire and
-accepts ``virtual_key_id``, but neither SDK exposes ``cursor`` or
-``virtual_key_id`` on ``summaries()``, so this reads one page. Confirm the
-default page size covers the demo's key count before trusting this as a
-complete checksum set.
+``/spend-summaries`` is cursor-paginated and accepts ``virtual_key_id``.
+``iter_summaries()`` walks the cursor for you, which is what makes the
+checksum set complete rather than however many keys fit on the first page.
 
 Run: ``python reconcile.py`` (needs LANGWATCH_API_KEY in the environment).
 """
@@ -106,7 +104,10 @@ def main() -> int:
         for row in ledger.totals_by_virtual_key(from_iso, to_iso)
     }
 
-    summaries = langwatch.spend_events.summaries(
+    # iter_summaries walks the cursor to exhaustion. summaries() would hand
+    # back only the first page, which would silently reconcile whatever keys
+    # landed on it and declare the rest clean.
+    summaries = langwatch.spend_events.iter_summaries(
         group_by="virtual_key", from_ms=from_ms, to_ms=to_ms
     )
 

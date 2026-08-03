@@ -34,7 +34,11 @@ import { Ledger, type LedgerEnvelope } from "./ledger.js";
  * RECONCILED with exit code 0. The bundled ledger already carries a real
  * gap to reproduce against.
  */
-import { SpendEventsApiService, type SpendEvent } from "langwatch";
+import {
+  SpendEventsApiService,
+  type SpendEvent,
+  type SpendSummaryRow,
+} from "langwatch";
 import "./env.js";
 
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
@@ -104,19 +108,26 @@ async function main() {
   );
 
   // Windows are epoch milliseconds on every spend route.
-  // TODO-VALIDATE: /spend-summaries is cursor-paginated on the wire and
-  // accepts virtual_key_id, but neither SDK exposes `cursor` or
-  // `virtual_key_id` on summaries(), so this reads one page. Confirm the
-  // default page size covers the demo's key count, or that the SDK gained
-  // the parameters, before trusting this as a complete checksum set.
-  const summaries = await spendEvents.summaries({
-    groupBy: "virtual_key",
-    from: fromMs,
-    to: toMs,
-  });
+  //
+  // /spend-summaries is cursor-paginated, so a checksum set is only complete
+  // once the cursor comes back null. Reading a single page would silently
+  // reconcile whatever keys happened to land on it and declare the rest
+  // clean, which is the one failure a reconciler must never have.
+  const summaryRows: SpendSummaryRow[] = [];
+  let summaryCursor: string | undefined;
+  do {
+    const page = await spendEvents.summaries({
+      groupBy: "virtual_key",
+      from: fromMs,
+      to: toMs,
+      cursor: summaryCursor,
+    });
+    summaryRows.push(...page.data);
+    summaryCursor = page.next_cursor ?? undefined;
+  } while (summaryCursor);
 
   let clean = true;
-  for (const remote of summaries.data) {
+  for (const remote of summaryRows) {
     const mine = local.get(remote.key);
     const localCount = mine?.event_count ?? 0;
     const localNano = mine?.cost_nano_usd ?? 0;

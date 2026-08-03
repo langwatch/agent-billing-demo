@@ -31,7 +31,12 @@ import {
   virtualKeys,
 } from "./langwatch.js";
 import { loadBudgetsOrDegrade, loadSeatSpend, usageFor } from "./usage.js";
-import { ingestEnvelope, verifySignature, type Envelope } from "./webhooks.js";
+import {
+  DELIVERY_ID_HEADER,
+  ingestEnvelope,
+  verifySignature,
+  type Envelope,
+} from "./webhooks.js";
 
 /**
  * ACME Agents: a small agent-platform SaaS that meters and rebills its
@@ -91,7 +96,13 @@ app.post(
       ingested += 1;
       feed.publish({ kind: "billing_event", event: presentEvent(row) });
     }
-    console.log(`[webhook] ${batch.length} delivered, ${ingested} new`);
+    // The delivery id correlates this log line with the delivery log on the
+    // LangWatch side. It identifies the DELIVERY, which carries the whole
+    // batch, so dedup stays on the envelope ids handled above.
+    const deliveryId = req.header(DELIVERY_ID_HEADER) ?? "unknown";
+    console.log(
+      `[webhook] delivery ${deliveryId}: ${batch.length} delivered, ${ingested} new`,
+    );
     res.json({ received: batch.length, ingested });
   },
 );

@@ -1,6 +1,6 @@
 import express from "express";
 import { readFileSync } from "node:fs";
-import { verifySignature } from "./verify-signature.js";
+import { DELIVERY_ID_HEADER, verifySignature } from "./verify-signature.js";
 import { Ledger } from "./ledger.js";
 import "./env.js";
 
@@ -11,6 +11,10 @@ import "./env.js";
  * The body shape is `{"batch": [envelope, ...]}`. Each envelope is
  * `{id, type, created, schema_version, data}`; `id` is the dedup key and
  * `data.gateway_request_id` is the join key across a settled/completed pair.
+ *
+ * `X-LangWatch-Delivery-Id` identifies the DELIVERY, which carries the whole
+ * batch. It is the handle that correlates this receiver's log with the
+ * delivery log on the LangWatch side, and it is never the dedup key.
  *
  * Answer 2xx only after the batch is durably ingested. A non-2xx (or a
  * timeout) makes LangWatch retry the whole batch along its ladder, which is
@@ -67,12 +71,13 @@ app.post("/webhooks/langwatch", (req, res) => {
     return res.status(503).json({ error: "jammed" });
   }
 
+  const deliveryId = req.header(DELIVERY_ID_HEADER) ?? "unknown";
   const body = JSON.parse(rawBody.toString("utf8")) as {
     batch: Array<{ id: string; type: string; data: Record<string, unknown> }>;
   };
   for (const envelope of body.batch) {
     const outcome = ledger.ingest(envelope);
-    console.log(`${envelope.type} ${envelope.id}: ${outcome}`);
+    console.log(`[${deliveryId}] ${envelope.type} ${envelope.id}: ${outcome}`);
   }
   if (jam === "after") {
     console.warn("jammed (after ingest): dropping the ack with 503");

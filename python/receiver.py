@@ -5,6 +5,10 @@ The body shape is ``{"batch": [envelope, ...]}``. Each envelope is
 ``{id, type, created, schema_version, data}``; ``id`` is the dedup key and
 ``data.gateway_request_id`` is the join key across a settled/completed pair.
 
+``X-LangWatch-Delivery-Id`` identifies the DELIVERY, which carries the whole
+batch. It is the handle that correlates this receiver's log with the delivery
+log on the LangWatch side, and it is never the dedup key.
+
 Answer 2xx only after the batch is durably ingested. A non-2xx (or a
 timeout) makes LangWatch retry the whole batch along its ladder, which is
 exactly what you want if your database hiccups: at-least-once delivery plus
@@ -23,7 +27,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request
 
 from ledger import Ledger
-from verify_signature import verify_signature
+from verify_signature import DELIVERY_ID_HEADER, verify_signature
 
 PORT = int(os.environ.get("PY_RECEIVER_PORT", "4102"))
 SECRET = os.environ.get("PY_WEBHOOK_SECRET", "")
@@ -45,10 +49,11 @@ def receive():
         print("rejected: bad or missing signature")
         return jsonify({"error": "invalid signature"}), 401
 
+    delivery_id = request.headers.get(DELIVERY_ID_HEADER, "unknown")
     body = json.loads(raw_body)
     for envelope in body["batch"]:
         outcome = ledger.ingest(envelope)
-        print(f"{envelope['type']} {envelope['id']}: {outcome}")
+        print(f"[{delivery_id}] {envelope['type']} {envelope['id']}: {outcome}")
     return jsonify({"received": len(body["batch"])})
 
 

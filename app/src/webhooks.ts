@@ -7,14 +7,21 @@ import type { AppDatabase, BillingEvent } from "./db.js";
  * standalone receivers in `ts/` and `python/` implement the identical
  * contract; this module is the version that lives inside the product.
  *
- * The contract, in three rules:
+ * The contract, in four rules:
  *
  * 1. Verify the HMAC over the EXACT raw bytes received. Parse afterwards.
- * 2. Dedup by envelope id. Delivery is at-least-once.
- * 3. Answer 2xx only once the batch is durably stored, so a failed write
+ *    `v1` repeats during a secret rotation, so ANY `v1` matching accepts.
+ * 2. Dedup by envelope id. Delivery is at-least-once. `X-LangWatch-Delivery-Id`
+ *    names the DELIVERY, which carries a whole batch, so it is a log
+ *    correlation handle and never the dedup key.
+ * 3. Fail closed: no secret configured means no verification is possible.
+ * 4. Answer 2xx only once the batch is durably stored, so a failed write
  *    makes LangWatch retry instead of dropping money on the floor.
  */
-const TOLERANCE_SECONDS = 5 * 60;
+export const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
+
+/** Names the delivery, not an event: one delivery carries a whole batch. */
+export const DELIVERY_ID_HEADER = "X-LangWatch-Delivery-Id";
 
 export function verifySignature(params: {
   rawBody: Buffer;
@@ -22,35 +29,63 @@ export function verifySignature(params: {
   secret: string;
   nowMs?: number;
 }): boolean {
+  // No header and no secret are both "cannot verify", which is a rejection.
   if (!params.signatureHeader || !params.secret) return false;
 
-  const parts = new Map<string, string>();
-  for (const piece of params.signatureHeader.split(",")) {
-    const eq = piece.indexOf("=");
-    if (eq > 0) parts.set(piece.slice(0, eq).trim(), piece.slice(eq + 1).trim());
-  }
-  const timestamp = parts.get("t");
-  const signature = parts.get("v1");
-  if (!timestamp || !signature) return false;
+  const { timestamp, candidates } = parseSignatureHeader(params.signatureHeader);
+  if (!timestamp || candidates.length === 0) return false;
 
   const timestampSeconds = Number(timestamp);
   if (!Number.isFinite(timestampSeconds)) return false;
   const nowSeconds = (params.nowMs ?? Date.now()) / 1000;
-  if (Math.abs(nowSeconds - timestampSeconds) > TOLERANCE_SECONDS) return false;
+  if (Math.abs(nowSeconds - timestampSeconds) > SIGNATURE_TOLERANCE_SECONDS) {
+    return false;
+  }
 
   const expected = createHmac("sha256", params.secret)
     .update(`${timestamp}.`)
     .update(params.rawBody)
-    .digest();
+    .digest("hex");
 
-  let received: Buffer;
-  try {
-    received = Buffer.from(signature, "hex");
-  } catch {
-    return false;
+  // Every candidate is compared even once one has matched, so the work does
+  // not depend on WHICH signature matched.
+  let matched = false;
+  for (const candidate of candidates) {
+    if (digestsMatch(expected, candidate)) matched = true;
   }
-  if (received.length !== expected.length) return false;
-  return timingSafeEqual(received, expected);
+  return matched;
+}
+
+/**
+ * The timestamp and EVERY `v1` the header carries. A rotation sends one per
+ * currently valid secret, newest first: `t=...,v1=<new>,v1=<old>`.
+ */
+function parseSignatureHeader(header: string): {
+  timestamp: string | null;
+  candidates: string[];
+} {
+  let timestamp: string | null = null;
+  const candidates: string[] = [];
+  for (const piece of header.split(",")) {
+    const eq = piece.indexOf("=");
+    if (eq <= 0) continue;
+    const key = piece.slice(0, eq).trim();
+    const value = piece.slice(eq + 1).trim();
+    if (key === "t") timestamp = value;
+    else if (key === "v1") candidates.push(value);
+  }
+  return { timestamp, candidates };
+}
+
+/**
+ * Constant-time equality over the hex digests, length-safe. Compared as
+ * text rather than decoded bytes: hex decoding accepts a malformed digest by
+ * truncating it, which would compare a prefix instead of failing.
+ */
+function digestsMatch(expected: string, candidate: string): boolean {
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(candidate, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export interface Envelope {
@@ -88,7 +123,7 @@ export function ingestEnvelope(
     event_id: envelope.id,
     type: envelope.type,
     gateway_request_id: asString(data.gateway_request_id),
-    virtual_key_id: asString(data.virtual_key_id) ?? bucketVirtualKey(data),
+    virtual_key_id: asString(data.virtual_key_id) ?? archivedBucketVirtualKey(data),
     end_user_id: asString(data.end_user_id),
     model: asString(data.model),
     status: asString(data.status),
@@ -121,12 +156,18 @@ function asString(value: unknown): string | null {
 }
 
 /**
- * Budget events identify the bucket that moved, not the key: a tenant cap
- * carries `bucket_scope_id: "<vk id>"` and a per-seat allowance carries
- * `"<anchor vk id>:<end user id>"`. Both resolve to the same tenant, which
- * is what puts a threshold warning on the right customer's feed.
+ * Budget events name their tenant directly: `virtual_key_id` is first-class
+ * on every `gateway.budget.*` payload, alongside `anchor_project_id`, so a
+ * threshold warning lands on the right customer's feed by reading one field.
+ *
+ * This is the fallback for envelopes archived BEFORE that field existed,
+ * which is the only place the old shape still appears: those payloads carry
+ * the bucket that moved rather than the key, as `"<vk id>"` for a tenant cap
+ * and `"<anchor vk id>:<end user id>"` for a per-seat allowance. Reading
+ * them keeps the historical feed intact instead of dropping rows the demo
+ * ingested weeks ago; nothing arriving now takes this path.
  */
-function bucketVirtualKey(data: Record<string, unknown>): string | null {
+function archivedBucketVirtualKey(data: Record<string, unknown>): string | null {
   const bucket = asString(data.bucket_scope_id);
   if (!bucket) return null;
   const [key] = bucket.split(":");

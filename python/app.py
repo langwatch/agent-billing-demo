@@ -33,7 +33,7 @@ from openai import APIStatusError, OpenAI
 from pydantic import BaseModel
 
 from ledger import Ledger
-from verify_signature import verify_signature
+from verify_signature import DELIVERY_ID_HEADER, verify_signature
 
 PORT = int(os.environ.get("APP_PY_PORT", "4200"))
 BASE_URL = os.environ.get("LANGWATCH_BASE_URL", "http://localhost:5560")
@@ -301,19 +301,24 @@ def close_period(customer_id: int) -> Dict[str, Any]:
 @app.post("/webhooks/langwatch")
 async def receive(request: Request) -> Dict[str, Any]:
     """Same contract as the standalone receivers: verify over the exact
-    raw bytes, ingest idempotently, 2xx only after durable ingest."""
+    raw bytes, ingest idempotently, 2xx only after durable ingest.
+
+    ``X-LangWatch-Delivery-Id`` names the DELIVERY, which carries the whole
+    batch: a log correlation handle, never the dedup key. Dedup is on the
+    envelope ``id`` inside the body, which the ledger owns.
+    """
     raw = await request.body()
     signature = request.headers.get("X-LangWatch-Signature", "")
-    if not WEBHOOK_SECRET or not verify_signature(
+    if not verify_signature(
         raw_body=raw, signature_header=signature, secret=WEBHOOK_SECRET
     ):
         raise HTTPException(401, "bad signature")
+    delivery_id = request.headers.get(DELIVERY_ID_HEADER, "unknown")
     batch = json.loads(raw).get("batch", [])
     outcomes = [ledger.ingest(envelope) for envelope in batch]
-    return {
-        "received": len(batch),
-        "ingested": sum(1 for o in outcomes if o == "ingested"),
-    }
+    ingested = sum(1 for o in outcomes if o == "ingested")
+    print(f"[{delivery_id}] {len(batch)} delivered, {ingested} new")
+    return {"received": len(batch), "ingested": ingested}
 
 
 @app.get("/api/customers/{customer_id}/billing")

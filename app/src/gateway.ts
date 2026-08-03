@@ -99,16 +99,31 @@ export async function streamChatAsTenant(
 }
 
 export interface GatewayFailure {
+  /** OpenAI-compatible discriminant. Always equal to `code`. */
+  type: string;
   code: string;
   message: string;
-  meta: Record<string, string>;
+  /**
+   * Machine-readable detail for this code. Values are arbitrary JSON, not
+   * just strings: a 402 carries `budget_id` / `budget_scope` /
+   * `budget_window` as strings, a 400 carries `reasons` as an array of
+   * `{code, message, meta?}`. Read a key with `metaString` when you expect
+   * a string; keep the rest as it arrived rather than dropping it.
+   */
+  meta: Record<string, unknown>;
 }
 
-/**
- * The gateway's error body rides on `responseBody` as
- * `{error: {code, message, meta}}`. The ai-sdk wraps provider errors, so
- * walk the `cause` chain and parse defensively; anything unrecognized is
- * reported as null and handled as a generic upstream failure.
+/** One canonical envelope, everywhere on the wire:
+ *
+ *     {"error": {"type", "code", "message", "meta"?}}
+ *
+ * The gateway data plane and every /api/gateway/v1 route answer this exact
+ * body, so there is one shape to read and no shape to guess. `type` and
+ * `code` always carry the same value; read whichever your transport taught
+ * you.
+ *
+ * The only wrinkle here is transport, not shape: the ai-sdk wraps provider
+ * errors, so the body has to be found down the `cause` chain.
  */
 export function readGatewayFailure(error: unknown): GatewayFailure | null {
   if (typeof error !== "object" || error === null) return null;
@@ -116,25 +131,42 @@ export function readGatewayFailure(error: unknown): GatewayFailure | null {
   if (typeof body !== "string") {
     return readGatewayFailure(Reflect.get(error, "cause"));
   }
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    const inner = (parsed.error ?? parsed) as Record<string, unknown>;
-    const code = inner.code ?? inner.type;
-    if (typeof code !== "string") return null;
-    const metaSource =
-      typeof inner.meta === "object" && inner.meta !== null
-        ? (inner.meta as Record<string, unknown>)
-        : inner;
-    const meta: Record<string, string> = {};
-    for (const [key, value] of Object.entries(metaSource)) {
-      if (typeof value === "string") meta[key] = value;
-    }
-    return {
-      code,
-      message: typeof inner.message === "string" ? inner.message : code,
-      meta,
-    };
+    parsed = JSON.parse(body);
   } catch {
     return null;
   }
+  const envelope = asRecord(parsed);
+  const inner = asRecord(envelope?.error);
+  // No `error` object means this is not a LangWatch refusal at all (a proxy
+  // page, an upstream body passed through). Report it as unrecognized and
+  // let the caller answer with a generic upstream failure.
+  if (!inner) return null;
+
+  const code = typeof inner.code === "string" ? inner.code : inner.type;
+  if (typeof code !== "string") return null;
+  const type = typeof inner.type === "string" ? inner.type : code;
+  return {
+    type,
+    code,
+    message: typeof inner.message === "string" ? inner.message : code,
+    meta: asRecord(inner.meta) ?? {},
+  };
+}
+
+/** One `meta` value, when the code documents that key as a string. */
+export function metaString(
+  meta: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = meta[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }

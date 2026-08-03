@@ -61,10 +61,10 @@ export interface ProvisionedTenant {
  * 1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
  *    tenant's gateway credential, and every budget and spend row hangs off
  *    its id. The secret comes back exactly once; store it like a password.
- * 2. A hard cap: `on_breach: BLOCK` on a MANUAL window. MANUAL accrues
- *    until an explicit reset, which is how a billing period closes without
- *    ever mutating recorded spend.
- * 3. A soft cap: `on_breach: WARN` at half the limit. Crossing it emits
+ * 2. A hard cap: `on_breach: "block"` on a `manual` window. A manual window
+ *    accrues until an explicit reset, which is how a billing period closes
+ *    without ever mutating recorded spend.
+ * 3. A soft cap: `on_breach: "warn"` at half the limit. Crossing it emits
  *    `gateway.budget.threshold_crossed` and stamps a warning header on
  *    responses; traffic keeps flowing.
  * 4. An attributed-user template: ONE budget row that caps every current
@@ -72,6 +72,10 @@ export interface ProvisionedTenant {
  *    buckets appear lazily on first spend. Fail-closed: once the template
  *    is active, requests without an end-user id are rejected with
  *    `end_user_required` instead of passing uncapped.
+ *
+ * Every enum on this surface is lowercase snake, on the way in and on the
+ * way out. Uppercase is rejected, so there is exactly one spelling of a
+ * scope kind, a window or a breach action to match on anywhere.
  */
 export async function provisionTenant(name: string): Promise<ProvisionedTenant> {
   const minted = await virtualKeys.create({
@@ -81,27 +85,27 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
   const virtualKeyId = minted.virtual_key.id;
 
   const hardCap = await budgets.create({
-    scope: { kind: "VIRTUAL_KEY", virtual_key_id: virtualKeyId },
+    scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
     name: `${name} hard cap`,
-    window: "MANUAL",
+    window: "manual",
     limit_usd: CAPS.hardUsd,
-    on_breach: "BLOCK",
+    on_breach: "block",
   });
 
   const softCap = await budgets.create({
-    scope: { kind: "VIRTUAL_KEY", virtual_key_id: virtualKeyId },
+    scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
     name: `${name} soft cap`,
-    window: "MANUAL",
+    window: "manual",
     limit_usd: CAPS.softUsd,
-    on_breach: "WARN",
+    on_breach: "warn",
   });
 
   const perUser = await budgets.create({
-    scope: { kind: "ATTRIBUTED_USER", anchor_virtual_key_id: virtualKeyId },
+    scope: { kind: "attributed_user", anchor_virtual_key_id: virtualKeyId },
     name: `${name} per-seat allowance`,
-    window: "MONTH",
+    window: "month",
     limit_usd: CAPS.perSeatUsd,
-    on_breach: "BLOCK",
+    on_breach: "block",
   });
 
   return {
@@ -160,13 +164,13 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
     };
     if (budget.archived_at) continue;
 
-    // ATTRIBUTED_USER rows are templates anchored to a virtual key: one row
+    // attributed_user rows are templates anchored to a virtual key: one row
     // that defines the allowance every seat of that tenant gets.
-    if (String(budget.scope_type) === "ATTRIBUTED_USER") {
+    if (budget.scope_type === "attributed_user") {
       perSeatTemplate.set(budget.scope_id, snapshot);
       continue;
     }
-    if (budget.scope_type === "VIRTUAL_KEY") {
+    if (budget.scope_type === "virtual_key") {
       const existing = perKey.get(budget.scope_id) ?? [];
       existing.push(snapshot);
       perKey.set(budget.scope_id, existing);
@@ -177,7 +181,7 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
   // number that actually stops traffic.
   for (const list of perKey.values()) {
     list.sort((left, right) => {
-      if (left.on_breach !== right.on_breach) return left.on_breach === "BLOCK" ? -1 : 1;
+      if (left.on_breach !== right.on_breach) return left.on_breach === "block" ? -1 : 1;
       return right.limit_usd - left.limit_usd;
     });
   }
@@ -185,7 +189,7 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
   return { perKey, perSeatTemplate, spendAvailable: response.spend_available };
 }
 
-/** Close a billing period: move the MANUAL window boundary, keep the books. */
+/** Close a billing period: move the manual window boundary, keep the books. */
 export function resetBudget(budgetId: string, reason: string) {
   return budgets.reset(budgetId, { reason });
 }

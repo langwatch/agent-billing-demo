@@ -187,7 +187,7 @@ export function usageFor(
     budgets,
     per_user_budgets: perUserBudgets,
     ledger,
-    primary: budgets.find((budget) => budget.on_breach === "BLOCK") ?? budgets[0] ?? null,
+    primary: budgets.find((budget) => budget.on_breach === "block") ?? budgets[0] ?? null,
     source: degraded ? "ledger" : "langwatch",
     degraded,
   };

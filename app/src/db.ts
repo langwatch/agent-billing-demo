@@ -18,11 +18,11 @@ export interface Customer {
   virtual_key_id: string;
   /** The VK secret, held server-side like any tenant credential. */
   virtual_key_secret: string;
-  /** The MANUAL-window BLOCK budget; reset closes the billing period. */
+  /** The manual-window block budget; reset closes the billing period. */
   hard_cap_budget_id: string;
-  /** The MANUAL-window WARN budget that trips before the hard cap. */
+  /** The manual-window warn budget that trips before the hard cap. */
   soft_cap_budget_id: string;
-  /** The ATTRIBUTED_USER template that caps every seat of this tenant. */
+  /** The attributed_user template that caps every seat of this tenant. */
   per_user_budget_id: string;
   created_at: string;
 }

@@ -21,7 +21,7 @@ import {
   upstreamError,
 } from "./errors.js";
 import { LiveFeed } from "./events.js";
-import { MODELS, readGatewayFailure, streamChatAsTenant } from "./gateway.js";
+import { MODELS, metaString, readGatewayFailure, streamChatAsTenant } from "./gateway.js";
 import {
   CAPS,
   provisionTenant,
@@ -404,22 +404,30 @@ app.post("/api/chat", async (req, res) => {
  * seat's allowance, `"virtual_key"` is the whole workspace's cap. That
  * distinction is the difference between "you hit your limit" and "your
  * company hit its limit", so it survives all the way to the screen.
+ *
+ * Scope kinds and windows are lowercase snake on the wire, so the branch
+ * below matches one spelling and does not normalize anything first.
  */
 function chatFailure(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
   const details = readGatewayFailure(error);
   if (details?.code === "budget_exceeded") {
-    const scope = details.meta.budget_scope;
+    const scope = metaString(details.meta, "budget_scope");
+    const perSeat = scope === "attributed_user";
     return new ApiError(
       402,
       "budget_exceeded",
-      scope === "attributed_user"
+      perSeat
         ? "You have used up your personal AI allowance for this period."
         : "Your workspace has reached its AI budget for this period.",
-      scope === "attributed_user"
+      perSeat
         ? "Your allowance resets at the start of next month."
         : "An admin can close the billing period to admit traffic again.",
-      { budget_scope: scope ?? null, budget_id: details.meta.budget_id ?? null },
+      {
+        budget_scope: scope,
+        budget_id: metaString(details.meta, "budget_id"),
+        budget_window: metaString(details.meta, "budget_window"),
+      },
     );
   }
   if (details?.code === "end_user_required") {
@@ -562,7 +570,7 @@ app.get("/api/admin/overview", async (_req, res) => {
 });
 
 /**
- * Close a billing period. Reset moves the MANUAL window's boundary; it
+ * Close a billing period. Reset moves the manual window's boundary; it
  * never mutates recorded spend, so the ledger and every emitted event stay
  * immutable and reconciliation is unaffected by a period close.
  */
@@ -570,15 +578,15 @@ app.post("/api/customers/:customerId/close-period", async (req, res) => {
   try {
     const customer = requireCustomer(req.params.customerId);
     const target = String(req.body?.budget ?? "all");
-    // Closing a period moves the MANUAL window boundary. The per-seat
-    // allowance rides a MONTH window and rolls over on its own, so it is
+    // Closing a period moves the manual window boundary. The per-seat
+    // allowance rides a month window and rolls over on its own, so it is
     // deliberately left alone: closing the company's books does not hand
     // every employee a fresh personal allowance.
     const caps = (await customerBudgets(customer)).filter(
       (budget) =>
-        budget.window === "MANUAL" &&
+        budget.window === "manual" &&
         (target === "all" ||
-          (target === "hard" ? budget.on_breach === "BLOCK" : budget.on_breach === "WARN")),
+          (target === "hard" ? budget.on_breach === "block" : budget.on_breach === "warn")),
     );
     if (caps.length === 0) {
       throw notFound(
@@ -591,7 +599,7 @@ app.post("/api/customers/:customerId/close-period", async (req, res) => {
     for (const budget of caps) {
       try {
         await resetBudget(budget.id, "ACME Agents period close");
-        reset.push(budget.on_breach === "BLOCK" ? "hard cap" : "soft cap");
+        reset.push(budget.on_breach === "block" ? "hard cap" : "soft cap");
         feed.publish({
           kind: "budget_reset",
           customer_id: customer.id,

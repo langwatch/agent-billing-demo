@@ -4,10 +4,10 @@
 1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
    tenant's gateway credential, and every budget and spend row hangs off its
    id. The secret is returned exactly once; store it like a password.
-2. A hard cap: ``on_breach: BLOCK``, MANUAL window. MANUAL accrues until an
-   explicit reset (``POST /budgets/:id/reset``), which is how a billing
-   period closes without ever mutating recorded spend.
-3. A soft cap: ``on_breach: WARN`` at a lower limit. Crossing it emits
+2. A hard cap: ``on_breach: "block"``, ``manual`` window. A manual window
+   accrues until an explicit reset (``POST /budgets/:id/reset``), which is how
+   a billing period closes without ever mutating recorded spend.
+3. A soft cap: ``on_breach: "warn"`` at a lower limit. Crossing it emits
    ``gateway.budget.threshold_crossed`` and stamps a warning header on
    responses; traffic keeps flowing.
 4. An attributed-user template: ONE budget row that caps every current and
@@ -18,6 +18,10 @@
 
 Plus, once per receiver (not per tenant): register the webhook endpoint and
 store its signing secret.
+
+Every enum on this surface is lowercase snake, on the way in and on the way
+out: scope kinds, windows, breach actions and key statuses. Uppercase is
+rejected, so there is exactly one spelling of each to send and to match on.
 
 Usage::
 
@@ -55,25 +59,25 @@ def provision_tenant(name: str) -> dict:
     vk_id = minted["virtual_key"]["id"]
 
     hard_cap = admin.create_budget(
-        scope={"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
+        scope={"kind": "virtual_key", "virtual_key_id": vk_id},
         name=f"{name} hard cap",
-        window="MANUAL",
+        window="manual",
         limit_usd="5.00",
-        on_breach="BLOCK",
+        on_breach="block",
     )
     soft_cap = admin.create_budget(
-        scope={"kind": "VIRTUAL_KEY", "virtual_key_id": vk_id},
+        scope={"kind": "virtual_key", "virtual_key_id": vk_id},
         name=f"{name} soft cap",
-        window="MANUAL",
+        window="manual",
         limit_usd="2.50",
-        on_breach="WARN",
+        on_breach="warn",
     )
     per_user = admin.create_budget(
-        scope={"kind": "ATTRIBUTED_USER", "anchor_virtual_key_id": vk_id},
+        scope={"kind": "attributed_user", "anchor_virtual_key_id": vk_id},
         name=f"{name} per-user allowance",
-        window="MONTH",
+        window="month",
         limit_usd="1.00",
-        on_breach="BLOCK",
+        on_breach="block",
     )
 
     return {

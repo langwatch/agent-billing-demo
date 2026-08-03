@@ -98,11 +98,11 @@ export function BudgetBar({
           <span className="truncate text-sm font-medium text-slate-700">
             {label ?? budget.name}
           </span>
-          <Badge tone={budget.on_breach === "BLOCK" ? "rose" : "amber"}>
-            {budget.on_breach === "BLOCK" ? "blocks" : "warns"}
+          <Badge tone={budget.on_breach === "block" ? "rose" : "amber"}>
+            {budget.on_breach === "block" ? "blocks" : "warns"}
           </Badge>
           <span className="hidden text-xs text-slate-400 sm:inline">
-            {budget.window.toLowerCase()} window
+            {budget.window} window
           </span>
         </div>
         <span className="shrink-0 font-mono text-xs text-slate-600 tabular-nums">

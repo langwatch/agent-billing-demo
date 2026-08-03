@@ -22,7 +22,10 @@ export interface BudgetView {
   /** Canonical integer figures. These are the money; sum and compare these. */
   limit_nano_usd: number | null;
   spend_nano_usd: number | null;
-  /** Display only, converted once at this boundary. Null stays null. */
+  /**
+   * Display only, converted once at this boundary. Null stays null all the
+   * way to the screen, where it renders as unknown rather than as zero.
+   */
   limit_usd: number | null;
   spend_usd: number | null;
   /** Null when spend could not be totalled: no spend, no percentage. */

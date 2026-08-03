@@ -87,11 +87,12 @@ export function Developer() {
 
           <Card
             title="The billing webhook"
-            subtitle="Verify the raw bytes, dedup by event id, answer 2xx after the write"
+            subtitle="Verify the raw bytes, dedup by envelope id, answer 2xx after the write"
           >
             <Snippet
               code={`POST /webhooks/langwatch
-X-LangWatch-Signature: t=<unix>,v1=<hex hmac sha256>
+X-LangWatch-Delivery-Id: <delivery id>
+X-LangWatch-Signature: t=<unix>,v1=<hex hmac sha256>[,v1=<previous>]
 
 {"batch": [
   {"id": "<request id>:completed",
@@ -107,7 +108,11 @@ X-LangWatch-Signature: t=<unix>,v1=<hex hmac sha256>
             <p className="mt-3 text-xs text-slate-500">
               The HMAC covers{" "}
               <code className="font-mono">{"`${t}.${rawBody}`"}</code>. Parse after
-              verifying, never before.
+              verifying, never before. While a secret is rotating,{" "}
+              <code className="font-mono">v1</code> repeats once per valid secret
+              and any match accepts. The delivery id names the whole batch, so
+              dedup on each envelope&rsquo;s own{" "}
+              <code className="font-mono">id</code>.
             </p>
           </Card>
         </div>

@@ -166,6 +166,10 @@ function asString(value: unknown): string | null {
  * and `"<anchor vk id>:<end user id>"` for a per-seat allowance. Reading
  * them keeps the historical feed intact instead of dropping rows the demo
  * ingested weeks ago; nothing arriving now takes this path.
+ *
+ * TODO-VALIDATE: trip a cap and confirm the delivered gateway.budget.breached
+ * payload carries virtual_key_id (and anchor_project_id) first-class, so a
+ * freshly delivered budget event never reaches this fallback.
  */
 function archivedBucketVirtualKey(data: Record<string, unknown>): string | null {
   const bucket = asString(data.bucket_scope_id);

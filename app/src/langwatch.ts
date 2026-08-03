@@ -76,6 +76,11 @@ export interface ProvisionedTenant {
  * Every enum on this surface is lowercase snake, on the way in and on the
  * way out. Uppercase is rejected, so there is exactly one spelling of a
  * scope kind, a window or a breach action to match on anywhere.
+ *
+ * TODO-VALIDATE: run a real signup against the gateway and confirm all four
+ * creates are accepted with these lowercase values, and that the rows come
+ * back with scope_type "virtual_key" / "attributed_user" so loadBudgets
+ * sorts them into perKey and perSeatTemplate rather than dropping them.
  */
 export async function provisionTenant(name: string): Promise<ProvisionedTenant> {
   const minted = await virtualKeys.create({
@@ -153,6 +158,11 @@ export interface BudgetsByKey {
  *
  * Money is taken as the integer nano-USD fields the rows carry, never parsed
  * out of the decimal display strings beside them.
+ *
+ * TODO-VALIDATE: confirm live rows carry limit_nano_usd and spent_nano_usd,
+ * and that spent_nano_usd is null (not 0) on a response whose
+ * spend_available is false, which is what makes the meter say "unknown"
+ * instead of showing a confident zero.
  */
 export async function loadBudgets(): Promise<BudgetsByKey> {
   const response = await budgets.list();

@@ -26,6 +26,16 @@ is your reconciliation work queue, not your invoice.
 Exit code 0 means every virtual key's local totals match LangWatch's
 checksums, whether they already did or were repaired to.
 
+TODO-VALIDATE: delete a row from python/ledger.sqlite, run this, and confirm
+the walk names that request, backfills it, and re-reads the checksum as
+RECONCILED with exit code 0.
+
+TODO-VALIDATE: ``/spend-summaries`` is cursor-paginated on the wire and
+accepts ``virtual_key_id``, but neither SDK exposes ``cursor`` or
+``virtual_key_id`` on ``summaries()``, so this reads one page. Confirm the
+default page size covers the demo's key count before trusting this as a
+complete checksum set.
+
 Run: ``python reconcile.py`` (needs LANGWATCH_API_KEY in the environment).
 """
 

@@ -251,6 +251,12 @@ def _gateway_error(error: APIStatusError) -> Optional[Dict[str, Any]]:
 
     Returns None when the body carries no ``error`` object, which means this
     is not a LangWatch refusal at all and belongs on the generic 502 path.
+
+    TODO-VALIDATE: drive a real 402 through the OpenAI client and confirm
+    ``error.response.json()`` carries the canonical envelope with
+    ``meta.budget_scope`` / ``budget_id`` / ``budget_window``, lowercase. If
+    another shape arrives, that is a wire regression to report, not a shape
+    to tolerate here again.
     """
     try:
         envelope = error.response.json()

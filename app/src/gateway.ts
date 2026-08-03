@@ -124,6 +124,12 @@ export interface GatewayFailure {
  *
  * The only wrinkle here is transport, not shape: the ai-sdk wraps provider
  * errors, so the body has to be found down the `cause` chain.
+ *
+ * TODO-VALIDATE: drive a real 402 through the ai-sdk and confirm the
+ * canonical envelope reaches `responseBody` intact, with meta.budget_scope,
+ * meta.budget_id and meta.budget_window present and lowercase. If any other
+ * shape arrives, that is a wire regression to report, not a shape to
+ * tolerate here again.
  */
 export function readGatewayFailure(error: unknown): GatewayFailure | null {
   if (typeof error !== "object" || error === null) return null;

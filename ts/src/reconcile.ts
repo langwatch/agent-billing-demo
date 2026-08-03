@@ -28,6 +28,11 @@ import { Ledger, type LedgerEnvelope } from "./ledger.js";
  *
  * Exit code 0 means every virtual key's local totals match LangWatch's
  * checksums, whether they already did or were repaired to.
+ *
+ * TODO-VALIDATE: delete a row from ts/ledger.sqlite, run this, and confirm
+ * the walk names that request, backfills it, and re-reads the checksum as
+ * RECONCILED with exit code 0. The bundled ledger already carries a real
+ * gap to reproduce against.
  */
 import { SpendEventsApiService, type SpendEvent } from "langwatch";
 import "./env.js";
@@ -99,6 +104,11 @@ async function main() {
   );
 
   // Windows are epoch milliseconds on every spend route.
+  // TODO-VALIDATE: /spend-summaries is cursor-paginated on the wire and
+  // accepts virtual_key_id, but neither SDK exposes `cursor` or
+  // `virtual_key_id` on summaries(), so this reads one page. Confirm the
+  // default page size covers the demo's key count, or that the SDK gained
+  // the parameters, before trusting this as a complete checksum set.
   const summaries = await spendEvents.summaries({
     groupBy: "virtual_key",
     from: fromMs,

@@ -32,6 +32,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * Delivery identity is a separate header and not part of this check:
  * `X-LangWatch-Delivery-Id` names the DELIVERY, and one delivery carries a
  * whole batch of envelopes. Dedup on the envelope `id` inside the body.
+ *
+ * TODO-VALIDATE: roll an endpoint's secret and, inside the 24 hour window
+ * that keeps the previous secret valid, confirm a delivery signed with both
+ * secrets is accepted by a receiver still holding the OLD one and by one
+ * already holding the NEW one. That is the case a single-`v1` verifier
+ * fails, and it is the only one that needs a live rotation to prove.
  */
 export const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 

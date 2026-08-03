@@ -21,8 +21,8 @@ export function nanoToUsd(nano: number): number {
 
 /**
  * Display only, null-preserving. Spend the platform could not total arrives
- * as null, and it has to stay null: rendering it as $0.00 would be a figure
- * the reader takes for real money.
+ * as null, and it has to stay null all the way to the screen: rendering it
+ * as $0.00 would be a figure the reader takes for real money.
  */
 export function nanoToUsdOrNull(nano: number | null): number | null {
   return nano === null ? null : nanoToUsd(nano);

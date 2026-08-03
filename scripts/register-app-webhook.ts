@@ -45,14 +45,9 @@ const result = existing
 if (existing) {
   // Rolling only replaces the secret, so make sure the event list and the
   // status are what this app expects even if the endpoint predates it.
-  //
-  // "ACTIVE" is uppercase on purpose. The gateway surface speaks lowercase
-  // snake enums, but the webhook endpoint status is its own enum on its own
-  // surface and is still ACTIVE / DISABLED. Lowercasing it here to match the
-  // budgets API would be rejected.
   await webhooks.update(existing.id, {
     enabledEvents: BILLING_EVENTS,
-    status: "ACTIVE",
+    status: "active",
   });
 }
 

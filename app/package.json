@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "dev:web": "vite --config web/vite.config.ts",
+    "dev:web:python": "DEMO_API_TARGET=http://localhost:${APP_PY_PORT:-4200} vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "seed": "tsx ../scripts/seed.ts"

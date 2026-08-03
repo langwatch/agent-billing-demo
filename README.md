@@ -83,6 +83,14 @@ The integration surfaces exist twice, one per language, each self-contained:
 | Provisioning | `ts/src/provision.ts` | `python/provision.py` |
 | App shell | `app/` (Express + React, :4100) | `python/app.py` (FastAPI, :4200) |
 
+The two app shells are split the same way, so a module can be read beside its
+twin: routes (`app/src/server.ts` / `python/app.py`), the gateway request path
+(`gateway.ts` / `gateway.py`), every platform call (`langwatch.ts` /
+`platform_api.py`), the meters (`usage.ts` / `usage.py`), the error envelope
+(`errors.ts` / `errors.py`), the SSE fan-out (`events.ts` / `live_feed.py`),
+the webhook archive (`webhooks.ts` / `webhook_ingest.py`), the schema
+(`db.ts` / `store.py`) and the money rules (`money.ts` / `money.py`).
+
 The app also hosts its own receiver at `app/src/webhooks.ts`, which is what
 makes the meters move on their own: an ingested event is written, then pushed
 to the browser over Server-Sent Events in the same breath.
@@ -113,6 +121,41 @@ pnpm dev:web              # Vite with hot reload on :4300, proxying the API to :
 pnpm receiver:ts          # the standalone TypeScript receiver on :4101
 python python/receiver.py # the standalone Python receiver on :4102
 ```
+
+### The same browser app, either backend
+
+The two app shells implement the same HTTP contract on purpose: same paths,
+same request bodies, same response shapes, same status codes, and the same
+`{"error": {"code", "message", "hint"}}` envelope. The React app in `app/web`
+is one bundle, and it cannot tell which one it is talking to. Sign-up, the
+streaming chat, the live meters, the event feed, the owner console and the
+period close all work against either.
+
+```bash
+pnpm dev                  # TypeScript app on :4100, serving the UI at :4100
+pnpm dev:python           # Python app on :4200, serving the same UI at :4200
+```
+
+Both serve the built bundle from `app/web/dist`, so each port is a complete
+app on its own. For hot reload, Vite runs on :4300 and proxies to whichever
+backend you point it at:
+
+```bash
+pnpm dev:web              # :4300 against the TypeScript app
+pnpm dev:web:python       # :4300 against the Python app
+```
+
+`DEMO_API_TARGET` is the knob underneath, a full origin, so any other target
+works too:
+
+```bash
+DEMO_API_TARGET=http://localhost:4200 pnpm dev:web
+```
+
+The two shells keep separate databases (`app/app.sqlite` and
+`python/app_py.sqlite`) and separate webhook endpoints, so a tenant signed up
+on one does not appear on the other. Everything they read back, the caps, the
+spend and the delivered billing events, comes from the same LangWatch project.
 
 ### Reconciling
 

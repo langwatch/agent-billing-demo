@@ -31,6 +31,23 @@ class ProvisionedTenant:
     hard_cap_budget_id: str
     soft_cap_budget_id: str
     per_user_budget_id: str
+    #: The instant the seat allowance's monthly cycle is anchored to.
+    cycle_anchor_at: str
+    #: True when the platform replayed an earlier signup instead of creating.
+    replayed: bool
+
+
+def _signup_key(name: str, resource: str) -> str:
+    """The idempotency key for one resource of one signup.
+
+    Derived from the customer's identity, so a retried or double-submitted
+    signup asks for the same four resources and gets the same four back
+    instead of a second set. The name is normalized the same way the workspace
+    uniqueness check normalizes it: case and surrounding space are not what
+    makes two signups different.
+    """
+    identity = "-".join(name.strip().lower().split())
+    return f"acme-agents:signup:{identity}:{resource}"
 
 
 def provision_tenant(name: str) -> ProvisionedTenant:
@@ -54,33 +71,63 @@ def provision_tenant(name: str) -> ProvisionedTenant:
     Every enum on this surface is lowercase snake, on the way in and on the
     way out. Uppercase is rejected, so there is exactly one spelling of a
     scope kind, a window or a breach action to match on anywhere.
+
+    Two properties make this safe to retry, and both come from the SDK rather
+    than from bookkeeping here:
+
+    - **Idempotency.** Every create carries a key derived from the customer's
+      identity, so a double-submitted signup returns the SAME virtual key and
+      the SAME budgets. A replay is reported back rather than hidden, because
+      the second caller still needs to know it did not mint anything.
+    - **An anchored cycle.** The seat allowance's month window starts at the
+      instant the customer signed up, not on the calendar first. A customer
+      who starts on the 30th gets a period that runs to the 30th.
     """
-    admin = langwatch.gateway_admin
-    minted = admin.create_virtual_key(
-        name=name, description=f"Tenant key for {name} (ACME Agents signup)"
+    # One instant for the whole signup: the anchor the customer's billing
+    # period is measured from.
+    cycle_anchor_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    replays: List[bool] = []
+
+    def on_replay() -> None:
+        replays.append(True)
+
+    minted = langwatch.virtual_keys.create(
+        name=name,
+        description=f"Tenant key for {name} (ACME Agents signup)",
+        idempotency_key=_signup_key(name, "virtual-key"),
+        on_idempotent_replay=on_replay,
     )
     virtual_key_id = minted["virtual_key"]["id"]
 
-    hard_cap = admin.create_budget(
+    hard_cap = langwatch.gateway_budgets.create(
         scope={"kind": "virtual_key", "virtual_key_id": virtual_key_id},
         name=f"{name} hard cap",
         window="manual",
         limit_usd=CAPS["hard_usd"],
         on_breach="block",
+        idempotency_key=_signup_key(name, "hard-cap"),
+        on_idempotent_replay=on_replay,
     )
-    soft_cap = admin.create_budget(
+    soft_cap = langwatch.gateway_budgets.create(
         scope={"kind": "virtual_key", "virtual_key_id": virtual_key_id},
         name=f"{name} soft cap",
         window="manual",
         limit_usd=CAPS["soft_usd"],
         on_breach="warn",
+        idempotency_key=_signup_key(name, "soft-cap"),
+        on_idempotent_replay=on_replay,
     )
-    per_user = admin.create_budget(
+    # A cycle anchor belongs to a windowed budget: a manual window accrues
+    # until an explicit reset, and the platform rejects an anchor on one.
+    per_user = langwatch.gateway_budgets.create(
         scope={"kind": "attributed_user", "anchor_virtual_key_id": virtual_key_id},
         name=f"{name} per-seat allowance",
         window="month",
         limit_usd=CAPS["per_seat_usd"],
         on_breach="block",
+        cycle_anchor_at=cycle_anchor_at,
+        idempotency_key=_signup_key(name, "seat-allowance"),
+        on_idempotent_replay=on_replay,
     )
 
     return ProvisionedTenant(
@@ -89,6 +136,8 @@ def provision_tenant(name: str) -> ProvisionedTenant:
         hard_cap_budget_id=hard_cap["id"],
         soft_cap_budget_id=soft_cap["id"],
         per_user_budget_id=per_user["id"],
+        cycle_anchor_at=per_user.get("cycle_anchor_at") or cycle_anchor_at,
+        replayed=bool(replays),
     )
 
 

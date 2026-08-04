@@ -216,6 +216,12 @@ app.post("/api/customers", async (req, res) => {
 
     const customer = customerSummary(customerId);
     feed.publish({ kind: "customer_created", customer: { ...customer } });
+    if (provisioned.replayed) {
+      console.log(
+        `[signup] ${name}: the platform replayed an earlier signup,` +
+          ` key ${provisioned.virtualKeyId} reused`,
+      );
+    }
     res.status(201).json({
       customer,
       provisioned: {
@@ -223,6 +229,12 @@ app.post("/api/customers", async (req, res) => {
         hard_cap_usd: Number(CAPS.hardUsd),
         soft_cap_usd: Number(CAPS.softUsd),
         per_seat_cap_usd: Number(CAPS.perSeatUsd),
+        // The seat allowance's month runs from here, not from the calendar
+        // first, so the workspace can say when its period turns over.
+        cycle_anchor_at: provisioned.cycleAnchorAt,
+        // True when the idempotency key matched an earlier signup and the
+        // platform handed the same resources back instead of minting more.
+        replayed: provisioned.replayed,
       },
     });
   } catch (error) {

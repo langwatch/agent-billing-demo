@@ -19,6 +19,10 @@ interface SignUpResponse {
     hard_cap_usd: number;
     soft_cap_usd: number;
     per_seat_cap_usd: number;
+    /** Where the monthly allowance's cycle starts counting from. */
+    cycle_anchor_at: string;
+    /** True when the platform handed back an earlier signup's resources. */
+    replayed: boolean;
   };
 }
 
@@ -46,9 +50,15 @@ export function SignUp() {
         email: email.trim() || undefined,
       });
       signIn(result.customer.id);
+      // A double-submitted form asks the platform for the same resources
+      // under the same idempotency key, so the second attempt reconnects the
+      // workspace instead of minting a second key. Saying so beats a second
+      // identical success message the customer cannot tell apart.
       toast.success(
         `${result.customer.name} is ready`,
-        `Virtual key provisioned with a $${result.provisioned.hard_cap_usd.toFixed(2)} cap and a $${result.provisioned.per_seat_cap_usd.toFixed(2)} monthly allowance per seat.`,
+        result.provisioned.replayed
+          ? "This workspace was already provisioned, so we reconnected it to the same gateway key."
+          : `Virtual key provisioned with a $${result.provisioned.hard_cap_usd.toFixed(2)} cap and a $${result.provisioned.per_seat_cap_usd.toFixed(2)} monthly allowance per seat, starting today.`,
       );
       navigate("/app");
     } catch (error) {

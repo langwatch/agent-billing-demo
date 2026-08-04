@@ -217,6 +217,12 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
 
     customer = customer_summary(customer_id)
     feed.publish({"kind": "customer_created", "customer": customer})
+    if provisioned.replayed:
+        log.info(
+            "[signup] %s: the platform replayed an earlier signup, key %s reused",
+            name,
+            provisioned.virtual_key_id,
+        )
     return {
         "customer": customer,
         "provisioned": {
@@ -224,6 +230,12 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
             "hard_cap_usd": float(platform_api.CAPS["hard_usd"]),
             "soft_cap_usd": float(platform_api.CAPS["soft_usd"]),
             "per_seat_cap_usd": float(platform_api.CAPS["per_seat_usd"]),
+            # The seat allowance's month runs from here, not from the calendar
+            # first, so the workspace can say when its period turns over.
+            "cycle_anchor_at": provisioned.cycle_anchor_at,
+            # True when the idempotency key matched an earlier signup and the
+            # platform handed the same resources back instead of minting more.
+            "replayed": provisioned.replayed,
         },
     }
 

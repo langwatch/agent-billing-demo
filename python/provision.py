@@ -23,6 +23,11 @@ Every enum on this surface is lowercase snake, on the way in and on the way
 out: scope kinds, windows, breach actions and key statuses. Uppercase is
 rejected, so there is exactly one spelling of each to send and to match on.
 
+Every create carries an idempotency key derived from the tenant's identity, so
+a retry after a timeout returns the resources the first attempt made instead of
+a duplicate set, and the monthly allowance carries a cycle anchor so the
+tenant's period runs from the day it signed up.
+
 Usage::
 
     python provision.py --tenant "ACME Corp"
@@ -35,6 +40,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 import langwatch
 
@@ -45,39 +51,65 @@ if not API_KEY:
     sys.exit(1)
 
 # The official python SDK: one setup, then the facades. The org key
-# authorizes; LANGWATCH_PROJECT_ID (read by the gateway_admin facade)
-# says which project provisioned objects live under.
+# authorizes; LANGWATCH_PROJECT_ID (read by the virtual key and budget
+# facades) says which project provisioned objects live under.
 langwatch.setup(api_key=API_KEY, endpoint_url=BASE_URL, skip_open_telemetry_setup=True)
 
 
+def _signup_key(name: str, resource: str) -> str:
+    """The key one resource of one signup is created under. Derived from the
+    tenant's identity, so running this twice for the same tenant asks for the
+    same resources and gets the same ones back rather than a second set."""
+    identity = "-".join(name.strip().lower().split())
+    return f"acme-agents:signup:{identity}:{resource}"
+
+
 def provision_tenant(name: str) -> dict:
-    admin = langwatch.gateway_admin
-    minted = admin.create_virtual_key(
+    # One instant for the whole signup: the anchor the tenant's monthly cycle
+    # is measured from, so its period starts the day it starts.
+    cycle_anchor_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    replays: list[bool] = []
+
+    def on_replay() -> None:
+        replays.append(True)
+
+    minted = langwatch.virtual_keys.create(
         name=name,
         description=f"Tenant key for {name} (provisioned by acme-agents)",
+        idempotency_key=_signup_key(name, "virtual-key"),
+        on_idempotent_replay=on_replay,
     )
     vk_id = minted["virtual_key"]["id"]
 
-    hard_cap = admin.create_budget(
+    hard_cap = langwatch.gateway_budgets.create(
         scope={"kind": "virtual_key", "virtual_key_id": vk_id},
         name=f"{name} hard cap",
         window="manual",
         limit_usd="5.00",
         on_breach="block",
+        idempotency_key=_signup_key(name, "hard-cap"),
+        on_idempotent_replay=on_replay,
     )
-    soft_cap = admin.create_budget(
+    soft_cap = langwatch.gateway_budgets.create(
         scope={"kind": "virtual_key", "virtual_key_id": vk_id},
         name=f"{name} soft cap",
         window="manual",
         limit_usd="2.50",
         on_breach="warn",
+        idempotency_key=_signup_key(name, "soft-cap"),
+        on_idempotent_replay=on_replay,
     )
-    per_user = admin.create_budget(
+    # A cycle anchor belongs to a windowed budget: a manual window accrues
+    # until an explicit reset, and the platform rejects an anchor on one.
+    per_user = langwatch.gateway_budgets.create(
         scope={"kind": "attributed_user", "anchor_virtual_key_id": vk_id},
         name=f"{name} per-user allowance",
         window="month",
         limit_usd="1.00",
         on_breach="block",
+        cycle_anchor_at=cycle_anchor_at,
+        idempotency_key=_signup_key(name, "seat-allowance"),
+        on_idempotent_replay=on_replay,
     )
 
     return {
@@ -86,6 +118,8 @@ def provision_tenant(name: str) -> dict:
         "hard_cap_budget_id": hard_cap["id"],
         "soft_cap_budget_id": soft_cap["id"],
         "per_user_budget_id": per_user["id"],
+        "cycle_anchor_at": per_user.get("cycle_anchor_at") or cycle_anchor_at,
+        "replayed": bool(replays),
     }
 
 

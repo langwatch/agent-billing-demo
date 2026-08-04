@@ -24,6 +24,11 @@
  * out: scope kinds, windows, breach actions and key statuses. Uppercase is
  * rejected, so there is exactly one spelling of each to send and to match on.
  *
+ * Every create carries an idempotency key derived from the tenant's identity,
+ * so a retry after a timeout returns the resources the first attempt made
+ * instead of a duplicate set, and the monthly allowance carries a cycle anchor
+ * so the tenant's period runs from the day it signed up.
+ *
  * Usage:
  *   pnpm provision -- --tenant "ACME Corp" [--register-webhook http://host:port/webhooks/langwatch]
  */
@@ -57,36 +62,69 @@ const webhooks = new WebhooksApiService({
   apiKey: API_KEY,
 });
 
+/**
+ * The key one resource of one signup is created under. Derived from the
+ * tenant's identity, so running this twice for the same tenant asks for the
+ * same resources and gets the same ones back rather than a second set.
+ */
+function signupKey(name: string, resource: string): string {
+  const identity = name.trim().toLowerCase().replace(/\s+/g, "-");
+  return `acme-agents:signup:${identity}:${resource}`;
+}
+
 export async function provisionTenant(name: string) {
-  const minted = await virtualKeys.create({
-    name,
-    description: `Tenant key for ${name} (provisioned by acme-agents)`,
-  });
+  // One instant for the whole signup: the anchor the tenant's monthly cycle
+  // is measured from, so its period starts the day it starts.
+  const cycleAnchorAt = new Date().toISOString();
+  let replayed = false;
+  const onIdempotentReplay = () => {
+    replayed = true;
+  };
+
+  const minted = await virtualKeys.create(
+    {
+      name,
+      description: `Tenant key for ${name} (provisioned by acme-agents)`,
+    },
+    { idempotencyKey: signupKey(name, "virtual-key"), onIdempotentReplay },
+  );
   const vkId = minted.virtual_key.id;
 
-  const hardCap = await budgets.create({
-    scope: { kind: "virtual_key", virtual_key_id: vkId },
-    name: `${name} hard cap`,
-    window: "manual",
-    limit_usd: "5.00",
-    on_breach: "block",
-  });
+  const hardCap = await budgets.create(
+    {
+      scope: { kind: "virtual_key", virtual_key_id: vkId },
+      name: `${name} hard cap`,
+      window: "manual",
+      limit_usd: "5.00",
+      on_breach: "block",
+    },
+    { idempotencyKey: signupKey(name, "hard-cap"), onIdempotentReplay },
+  );
 
-  const softCap = await budgets.create({
-    scope: { kind: "virtual_key", virtual_key_id: vkId },
-    name: `${name} soft cap`,
-    window: "manual",
-    limit_usd: "2.50",
-    on_breach: "warn",
-  });
+  const softCap = await budgets.create(
+    {
+      scope: { kind: "virtual_key", virtual_key_id: vkId },
+      name: `${name} soft cap`,
+      window: "manual",
+      limit_usd: "2.50",
+      on_breach: "warn",
+    },
+    { idempotencyKey: signupKey(name, "soft-cap"), onIdempotentReplay },
+  );
 
-  const perUser = await budgets.create({
-    scope: { kind: "attributed_user", anchor_virtual_key_id: vkId },
-    name: `${name} per-user allowance`,
-    window: "month",
-    limit_usd: "1.00",
-    on_breach: "block",
-  });
+  // A cycle anchor belongs to a windowed budget: a manual window accrues
+  // until an explicit reset, and the platform rejects an anchor on one.
+  const perUser = await budgets.create(
+    {
+      scope: { kind: "attributed_user", anchor_virtual_key_id: vkId },
+      name: `${name} per-user allowance`,
+      window: "month",
+      limit_usd: "1.00",
+      on_breach: "block",
+      cycle_anchor_at: cycleAnchorAt,
+    },
+    { idempotencyKey: signupKey(name, "seat-allowance"), onIdempotentReplay },
+  );
 
   return {
     virtualKeyId: vkId,
@@ -94,13 +132,16 @@ export async function provisionTenant(name: string) {
     hardCapBudgetId: hardCap.id,
     softCapBudgetId: softCap.id,
     perUserBudgetId: perUser.id,
+    cycleAnchorAt: perUser.cycle_anchor_at ?? cycleAnchorAt,
+    replayed,
   };
 }
 
 export async function registerWebhookEndpoint(url: string) {
+  // Endpoint bodies are the wire shape: lowercase snake, in and out.
   const created = await webhooks.create({
     url,
-    enabledEvents: [
+    enabled_events: [
       "gateway.request.completed",
       "gateway.request.settled",
       "gateway.budget.threshold_crossed",

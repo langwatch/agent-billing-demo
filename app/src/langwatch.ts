@@ -53,6 +53,24 @@ export interface ProvisionedTenant {
   hardCapBudgetId: string;
   softCapBudgetId: string;
   perUserBudgetId: string;
+  /** The instant the seat allowance's monthly cycle is anchored to. */
+  cycleAnchorAt: string;
+  /** True when the platform replayed an earlier signup instead of creating. */
+  replayed: boolean;
+}
+
+/**
+ * The idempotency key for one resource of one signup. Derived from the
+ * customer's identity, so a retried or double-submitted signup asks for the
+ * same four resources and gets the same four back instead of a second set.
+ *
+ * The name is the identity a customer types, so it is normalized the same way
+ * the workspace uniqueness check normalizes it: case and surrounding space are
+ * not what makes two signups different.
+ */
+function signupKey(name: string, resource: string): string {
+  const identity = name.trim().toLowerCase().replace(/\s+/g, "-");
+  return `acme-agents:signup:${identity}:${resource}`;
 }
 
 /**
@@ -77,41 +95,68 @@ export interface ProvisionedTenant {
  * way out. Uppercase is rejected, so there is exactly one spelling of a
  * scope kind, a window or a breach action to match on anywhere.
  *
- * TODO-VALIDATE: run a real signup against the gateway and confirm all four
- * creates are accepted with these lowercase values, and that the rows come
- * back with scope_type "virtual_key" / "attributed_user" so loadBudgets
- * sorts them into perKey and perSeatTemplate rather than dropping them.
+ * Two properties make this safe to retry, and both come from the SDK rather
+ * than from bookkeeping here:
+ *
+ * - **Idempotency.** Every create carries a key derived from the customer's
+ *   identity, so a double-submitted signup returns the SAME virtual key and
+ *   the SAME budgets. A replay is reported back rather than hidden, because
+ *   the second caller still needs to know it did not mint anything.
+ * - **An anchored cycle.** The seat allowance's month window starts at the
+ *   instant the customer signed up, not on the calendar first. A customer who
+ *   starts on the 30th gets a period that runs to the 30th.
  */
 export async function provisionTenant(name: string): Promise<ProvisionedTenant> {
-  const minted = await virtualKeys.create({
-    name,
-    description: `Tenant key for ${name} (ACME Agents signup)`,
-  });
+  // One instant for the whole signup: the anchor the customer's billing
+  // period is measured from.
+  const cycleAnchorAt = new Date().toISOString();
+  let replayed = false;
+  const onIdempotentReplay = () => {
+    replayed = true;
+  };
+
+  const minted = await virtualKeys.create(
+    {
+      name,
+      description: `Tenant key for ${name} (ACME Agents signup)`,
+    },
+    { idempotencyKey: signupKey(name, "virtual-key"), onIdempotentReplay },
+  );
   const virtualKeyId = minted.virtual_key.id;
 
-  const hardCap = await budgets.create({
-    scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
-    name: `${name} hard cap`,
-    window: "manual",
-    limit_usd: CAPS.hardUsd,
-    on_breach: "block",
-  });
+  const hardCap = await budgets.create(
+    {
+      scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
+      name: `${name} hard cap`,
+      window: "manual",
+      limit_usd: CAPS.hardUsd,
+      on_breach: "block",
+    },
+    { idempotencyKey: signupKey(name, "hard-cap"), onIdempotentReplay },
+  );
 
-  const softCap = await budgets.create({
-    scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
-    name: `${name} soft cap`,
-    window: "manual",
-    limit_usd: CAPS.softUsd,
-    on_breach: "warn",
-  });
+  const softCap = await budgets.create(
+    {
+      scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
+      name: `${name} soft cap`,
+      window: "manual",
+      limit_usd: CAPS.softUsd,
+      on_breach: "warn",
+    },
+    { idempotencyKey: signupKey(name, "soft-cap"), onIdempotentReplay },
+  );
 
-  const perUser = await budgets.create({
-    scope: { kind: "attributed_user", anchor_virtual_key_id: virtualKeyId },
-    name: `${name} per-seat allowance`,
-    window: "month",
-    limit_usd: CAPS.perSeatUsd,
-    on_breach: "block",
-  });
+  const perUser = await budgets.create(
+    {
+      scope: { kind: "attributed_user", anchor_virtual_key_id: virtualKeyId },
+      name: `${name} per-seat allowance`,
+      window: "month",
+      limit_usd: CAPS.perSeatUsd,
+      on_breach: "block",
+      cycle_anchor_at: cycleAnchorAt,
+    },
+    { idempotencyKey: signupKey(name, "seat-allowance"), onIdempotentReplay },
+  );
 
   return {
     virtualKeyId,
@@ -119,6 +164,8 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
     hardCapBudgetId: hardCap.id,
     softCapBudgetId: softCap.id,
     perUserBudgetId: perUser.id,
+    cycleAnchorAt: perUser.cycle_anchor_at ?? cycleAnchorAt,
+    replayed,
   };
 }
 

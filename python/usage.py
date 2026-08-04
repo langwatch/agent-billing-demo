@@ -99,6 +99,13 @@ def _to_view(budget: BudgetSnapshot) -> Dict[str, Any]:
         "limit_usd": nano_to_usd_or_none(budget.limit_nano_usd),
         "spend_usd": nano_to_usd_or_none(budget.spent_nano_usd),
         "percent": _percent_of(budget.spent_nano_usd, budget.limit_nano_usd),
+        # The cycle this figure covers, as the platform enforces it. A cap
+        # whose period does not start on the calendar first is not a rounding
+        # detail: it is the difference between the customer's month and the
+        # accountant's.
+        "current_period_started_at": budget.current_period_started_at,
+        "resets_at": budget.resets_at,
+        "cycle_anchor_at": budget.cycle_anchor_at,
     }
 
 
@@ -153,6 +160,9 @@ def usage_for(
                     "limit_usd": nano_to_usd_or_none(template.limit_nano_usd),
                     "spend_usd": nano_to_usd(spend_nano),
                     "percent": _percent_of(spend_nano, template.limit_nano_usd),
+                    "current_period_started_at": template.current_period_started_at,
+                    "resets_at": template.resets_at,
+                    "cycle_anchor_at": template.cycle_anchor_at,
                     "end_user_id": seat,
                 }
             )

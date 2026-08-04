@@ -184,8 +184,15 @@ export interface BudgetSnapshot {
    * be rendered as a figure.
    */
   spent_nano_usd: number | null;
+  /** The current cycle's boundaries, as the platform enforces them. */
   current_period_started_at: string;
   resets_at: string;
+  /**
+   * Set when the cycle is anchored to an instant of this tenant's own, which
+   * is what makes a period run from the day they signed up rather than from
+   * the calendar first. Null on a calendar-aligned or manual budget.
+   */
+  cycle_anchor_at: string | null;
 }
 
 export interface BudgetsByKey {
@@ -223,6 +230,7 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
       spent_nano_usd: budget.spent_nano_usd,
       current_period_started_at: budget.current_period_started_at,
       resets_at: budget.resets_at,
+      cycle_anchor_at: budget.cycle_anchor_at,
     };
     if (budget.archived_at) continue;
 

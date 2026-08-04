@@ -67,16 +67,16 @@ scripts/     seed two fictional tenants, register the app's webhook endpoint
 ```
 
 Both app shells consume the official LangWatch SDK for their language:
-provisioning, cap reads, budget resets, and reconciliation are SDK calls, never
-hand-rolled HTTP. Only the wire-contract modules (signature verification and
-the webhook receivers) stay dependency-free on purpose: they document the raw
-contract a consumer without an SDK implements.
+zero hand-rolled HTTP and zero hand-rolled crypto. Provisioning, cap reads,
+budget resets and reconciliation are SDK calls, and so is the one piece of
+security-critical code an integration used to write itself: webhook signatures
+are verified by the SDK's own verifier, which takes every secret the receiver
+currently holds so a rotation never drops a delivery.
 
 The integration surfaces exist twice, one per language, each self-contained:
 
 | Surface | TypeScript | Python |
 |---|---|---|
-| Signature verification | `ts/src/verify-signature.ts` | `python/verify_signature.py` |
 | Webhook receiver | `ts/src/receiver.ts` | `python/receiver.py` |
 | Billing ledger | `ts/src/ledger.ts` | `python/ledger.py` |
 | Reconciliation | `ts/src/reconcile.ts` | `python/reconcile.py` |
@@ -204,11 +204,19 @@ sequenceDiagram
     LW-->>App: {virtual_key.id, secret}  (secret shown once)
     App->>LW: POST /budgets {virtual_key, manual, $5, block}
     App->>LW: POST /budgets {virtual_key, manual, $2.50, warn}
-    App->>LW: POST /budgets {attributed_user, month, $1, block}
+    App->>LW: POST /budgets {attributed_user, month, $1, block, cycle_anchor_at: now}
     App->>App: store {vk id, secret, budget ids} on the customer row
     App-->>Browser: 201, redirect into the dashboard
     Note over App,GW: from here the tenant chats via the gateway<br/>with its own key; seats need NO provisioning,<br/>their buckets appear on first spend
 ```
+
+Every one of those four creates carries an idempotency key derived from the
+customer's name, so a double-submitted form or a retry after a timeout returns
+the SAME key and the SAME budgets rather than a second set, and the app says so
+instead of reporting a fresh provisioning. The monthly seat allowance carries a
+`cycle_anchor_at` of the signup instant, so the customer's billing period runs
+from the day they started rather than from the calendar first, and the usage
+meter shows the dates.
 
 A name that is already taken never reaches the platform: the app checks first,
 answers `409 {"error": {"code": "customer_exists"}}` with the existing
@@ -247,11 +255,14 @@ sequenceDiagram
 
 Worth internalizing before you adapt it:
 
-1. **Verify the raw bytes.** The HMAC covers the exact body received. Parse
-   after verification, never before. `v1` repeats while a secret is rotating,
-   one per currently valid secret, so accept the delivery when ANY of them
-   matches. Compare in constant time, and fail closed when no secret is
-   configured.
+1. **Verify the raw bytes with the SDK verifier.** `verifyWebhookSignature`
+   (`verify_webhook_signature` in python) covers the exact body received, so
+   parse after verification and never before. Hand it every secret the
+   receiver currently holds: `v1` repeats while a secret is rotating, one per
+   currently valid secret, and the delivery is good when any of them matches.
+   It throws rather than returning false, so a delivery cannot be trusted by
+   forgetting to read a return value, and the error's `code` says which check
+   failed (`malformed_header`, `stale_timestamp`, `invalid_signature`).
 2. **Dedup by the envelope `id`.** Delivery is at-least-once; ingest must be
    idempotent. Ids are stable across retries and replays.
    `X-LangWatch-Delivery-Id` names the DELIVERY, which carries a whole batch,

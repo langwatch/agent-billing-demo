@@ -30,6 +30,15 @@ export interface BudgetView {
   spend_usd: number | null;
   /** Null when spend could not be totalled: no spend, no percentage. */
   percent: number | null;
+  /**
+   * The cycle this figure covers, as the platform enforces it. A cap whose
+   * period does not start on the calendar first is not a rounding detail: it
+   * is the difference between the customer's month and the accountant's.
+   */
+  current_period_started_at: string;
+  resets_at: string;
+  /** Set when the cycle is anchored to this tenant's own start instant. */
+  cycle_anchor_at: string | null;
   end_user_id?: string | null;
 }
 
@@ -148,6 +157,9 @@ function toView(budget: BudgetSnapshot): BudgetView {
     limit_usd: nanoToUsdOrNull(budget.limit_nano_usd),
     spend_usd: nanoToUsdOrNull(budget.spent_nano_usd),
     percent: percentOf(budget.spent_nano_usd, budget.limit_nano_usd),
+    current_period_started_at: budget.current_period_started_at,
+    resets_at: budget.resets_at,
+    cycle_anchor_at: budget.cycle_anchor_at,
   };
 }
 
@@ -208,6 +220,9 @@ export function usageFor(
           limit_usd: nanoToUsdOrNull(template.limit_nano_usd),
           spend_usd: nanoToUsd(spendNano),
           percent: percentOf(spendNano, template.limit_nano_usd),
+          current_period_started_at: template.current_period_started_at,
+          resets_at: template.resets_at,
+          cycle_anchor_at: template.cycle_anchor_at,
           end_user_id: seat,
         };
       })

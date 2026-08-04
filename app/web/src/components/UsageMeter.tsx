@@ -54,9 +54,14 @@ export function UsageMeter({
 
           {usage.per_user_budgets.length > 0 && (
             <div>
-              <p className="mb-2 text-xs font-semibold tracking-wider text-slate-500 uppercase">
-                Per seat allowance
-              </p>
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <p className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
+                  Per seat allowance
+                </p>
+                {/* Every seat shares the template's cycle, so it is stated
+                    once rather than repeated on each bar. */}
+                <CycleNote budget={usage.per_user_budgets[0]!} />
+              </div>
               <div className="space-y-3">
                 {usage.per_user_budgets.map((budget) => (
                   <BudgetBar
@@ -111,6 +116,13 @@ export function BudgetBar({
           {money(budget.spend_usd)} / {money(budget.limit_usd)}
         </span>
       </div>
+      {/* A per-seat bar is one of many under a shared cycle, which the
+          section states once above them. */}
+      {label === undefined && (
+        <div className="mt-0.5">
+          <CycleNote budget={budget} />
+        </div>
+      )}
       <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
         <div
           className={cx("h-full rounded-full transition-all duration-500", tone)}
@@ -119,6 +131,44 @@ export function BudgetBar({
       </div>
     </div>
   );
+}
+
+/**
+ * When this cap's period started and when it turns over, in the customer's
+ * own words. A workspace provisioned on the 30th resets on the 30th, so the
+ * dates are the proof that the billing period belongs to the customer rather
+ * than to the calendar.
+ *
+ * A manual window has no scheduled turnover: it accrues until the period is
+ * closed by hand, and saying so is more honest than printing a date the
+ * platform will not act on.
+ */
+function CycleNote({ budget }: { budget: BudgetView }) {
+  const started = shortDate(budget.current_period_started_at);
+  if (!started) return null;
+  if (budget.window === "manual") {
+    return (
+      <span className="text-xs text-slate-500">
+        Open since {started}, resets when the period is closed
+      </span>
+    );
+  }
+  const resets = shortDate(budget.resets_at);
+  return (
+    <span className="text-xs text-slate-500">
+      Cycle started {started}
+      {resets ? `, resets ${resets}` : ""}
+      {budget.cycle_anchor_at ? " (anchored to your sign-up)" : ""}
+    </span>
+  );
+}
+
+/** "Jul 30" in the reader's own locale, or null when there is no date. */
+function shortDate(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

@@ -116,6 +116,11 @@ export interface BudgetView {
   limit_usd: number | null;
   spend_usd: number | null;
   percent: number | null;
+  /** The cycle this figure covers, exactly as the platform enforces it. */
+  current_period_started_at: string;
+  resets_at: string;
+  /** Set when the cycle is anchored to the workspace's own start instant. */
+  cycle_anchor_at: string | null;
   end_user_id?: string | null;
 }
 

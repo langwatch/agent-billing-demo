@@ -167,8 +167,14 @@ class BudgetSnapshot:
     #: total spend for this period, which is not the same as zero and must not
     #: be rendered as a figure.
     spent_nano_usd: Optional[int]
+    #: The current cycle's boundaries, as the platform enforces them.
     current_period_started_at: str
     resets_at: str
+    #: Set when the cycle is anchored to an instant of this tenant's own,
+    #: which is what makes a period run from the day they signed up rather
+    #: than from the calendar first. None on a calendar-aligned or manual
+    #: budget.
+    cycle_anchor_at: Optional[str]
 
 
 @dataclass
@@ -215,6 +221,7 @@ def load_budgets() -> BudgetsByKey:
             spent_nano_usd=row.get("spent_nano_usd"),
             current_period_started_at=row.get("current_period_started_at") or "",
             resets_at=row.get("resets_at") or "",
+            cycle_anchor_at=row.get("cycle_anchor_at"),
         )
         # attributed_user rows are templates anchored to a virtual key: one row
         # that defines the allowance every seat of that tenant gets.

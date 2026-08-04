@@ -33,6 +33,11 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import langwatch
+from langwatch import (
+    WEBHOOK_SIGNATURE_HEADER,
+    WebhookSignatureVerificationError,
+    verify_webhook_signature,
+)
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -46,11 +51,32 @@ from live_feed import SSE_HEADERS, LiveFeed
 from money import nano_to_usd, nano_to_usd_or_none
 from store import CUSTOMER_SUMMARY, connect, now_iso, open_db, seat_email_for
 from usage import load_budgets_or_degrade, load_seat_spend, usage_for
-from verify_signature import DELIVERY_ID_HEADER, verify_signature
 from webhook_ingest import ingest_envelope
+
+#: Names the delivery, not an event: one delivery carries a whole batch, so
+#: this correlates logs and is never the dedup key.
+DELIVERY_ID_HEADER = "X-LangWatch-Delivery-Id"
 
 PORT = int(os.environ.get("APP_PY_PORT", "4200"))
 WEBHOOK_SECRET = os.environ.get("PY_APP_WEBHOOK_SECRET", "")
+
+
+def accepted_secrets() -> List[str]:
+    """Every secret this receiver accepts right now, newest first.
+
+    Rolling a secret leaves the previous one valid for a day, and a delivery
+    mid-rotation is signed with both. Keeping the outgoing secret in its own
+    slot is what lets the swap happen without dropping deliveries; the SDK
+    verifier takes the list and accepts a delivery matching any of them.
+    """
+    return [
+        secret
+        for secret in (
+            os.environ.get("PY_APP_WEBHOOK_SECRET", ""),
+            os.environ.get("PY_APP_WEBHOOK_SECRET_PREVIOUS", ""),
+        )
+        if secret
+    ]
 PUBLIC_URL = os.environ.get("APP_PY_PUBLIC_URL", f"http://localhost:{PORT}")
 RECEIVER_URL = f"{PUBLIC_URL}/webhooks/langwatch"
 HISTORY_LIMIT = 20
@@ -667,16 +693,33 @@ async def receive(request: Request):
     envelope ``id`` inside the body, which the archive owns.
     """
     raw = await request.body()
-    if not verify_signature(
-        raw_body=raw,
-        signature_header=request.headers.get("X-LangWatch-Signature"),
-        secret=WEBHOOK_SECRET,
-    ):
-        log.warning("[webhook] rejected: bad or missing signature")
+    try:
+        # The SDK verifier over the raw bytes: it takes every secret this
+        # receiver currently accepts, so a delivery signed during a rotation
+        # verifies under either one.
+        verify_webhook_signature(
+            body=raw,
+            header=request.headers.get(WEBHOOK_SIGNATURE_HEADER, ""),
+            secret=accepted_secrets(),
+        )
+    except WebhookSignatureVerificationError as error:
+        log.warning("[webhook] rejected: %s", error.code)
         return JSONResponse(
             status_code=401,
+            content={"error": {"code": error.code, "message": "Signature check failed."}},
+        )
+    except TypeError:
+        # A missing secret is this app's configuration mistake, not a bad
+        # delivery. Answering 401 there would blame the sender and hide a
+        # receiver that can no longer verify anything.
+        log.error("[webhook] cannot verify: no signing secret configured")
+        return JSONResponse(
+            status_code=500,
             content={
-                "error": {"code": "invalid_signature", "message": "Signature check failed."}
+                "error": {
+                    "code": "receiver_misconfigured",
+                    "message": "This receiver has no signing secret configured.",
+                }
             },
         )
 

@@ -1,14 +1,10 @@
 """Every call this app makes to the billing platform, in one place. The
-facades come from the official SDK: provisioning, cap reads and period closes
-are SDK calls, never hand-rolled HTTP.
+facades come from the official SDK: provisioning, cap reads, period closes and
+spend analytics are SDK calls, never hand-rolled HTTP.
 
 Two scopes are in play and they authenticate differently, which the SDK hides:
 virtual keys and budgets are project-scoped (the project id rides along),
 webhook endpoints and spend analytics are organization-scoped.
-
-Two calls do go over REST here, and both are gaps in the python SDK that the
-TypeScript SDK already covers. Each is marked SDK-GAP below with what to
-replace it with once the python side ships the method.
 """
 
 import os
@@ -16,7 +12,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
 import langwatch
 
 BASE_URL = os.environ.get("LANGWATCH_BASE_URL", "http://localhost:5560")
@@ -24,20 +19,6 @@ API_KEY = os.environ.get("LANGWATCH_API_KEY", "")
 PROJECT_ID = os.environ.get("LANGWATCH_PROJECT_ID", "")
 
 CAPS = {"hard_usd": "5.00", "soft_usd": "2.50", "per_seat_usd": "1.00"}
-
-#: The listing endpoint pages, and a page is not the answer. 100 is the
-#: server's ceiling per request; the walk below is what makes the result
-#: complete.
-PAGE_SIZE = 100
-
-
-def _rest() -> httpx.Client:
-    """The REST client for the two calls the python SDK does not cover.
-    Same auth as the SDK: an org key plus the project id header."""
-    headers = {"X-Auth-Token": API_KEY}
-    if PROJECT_ID:
-        headers["X-Project-Id"] = PROJECT_ID
-    return httpx.Client(base_url=BASE_URL, headers=headers, timeout=30)
 
 
 # ── Provisioning ────────────────────────────────────────────────────────
@@ -115,14 +96,9 @@ def revoke_virtual_key(virtual_key_id: str) -> None:
     """Hand a key back for good. Used when a sign-up minted one and then lost
     the race to claim the name, so the key has no owner and never will.
 
-    SDK-GAP: the python SDK offers ``disable_virtual_key`` (reversible) but no
-    ``revoke``. The TypeScript SDK's ``virtualKeys.revoke(id)`` is this call.
-    An orphan wants the permanent one, so it goes over REST until the python
-    facade grows it.
-    """
-    with _rest() as rest:
-        response = rest.post(f"/api/gateway/v1/virtual-keys/{virtual_key_id}/revoke")
-        response.raise_for_status()
+    Revoking is the permanent one; ``disable`` is the reversible one, and an
+    orphan is not coming back."""
+    langwatch.virtual_keys.revoke(virtual_key_id)
 
 
 # ── Caps ────────────────────────────────────────────────────────────────
@@ -164,31 +140,15 @@ def load_budgets() -> BudgetsByKey:
     Money is taken as the integer nano-USD fields the rows carry, never parsed
     out of the decimal display strings beside them.
 
-    SDK-GAP: ``langwatch.gateway_admin.list_budgets()`` reads ONE page and
-    accepts neither a cursor nor a limit, so on an organization with more
-    budgets than the server's page size it silently drops the rest and a
-    tenant's caps go missing from the meter. The TypeScript SDK's
-    ``budgets.list()`` walks the cursor for you. Swap the walk below for the
-    facade once the python SDK does the same.
+    ``list()`` walks the cursor to exhaustion, so this is the complete set of
+    caps and not a first page; ``list_page()`` is the single-page call. Its
+    ``spend_available`` is the pessimistic answer across every page walked,
+    because one page that could not total spend makes the whole listing's
+    spend unreal.
     """
-    rows: List[Dict[str, Any]] = []
-    spend_available = True
-    cursor: Optional[str] = None
-    with _rest() as rest:
-        while True:
-            params: Dict[str, Any] = {"limit": PAGE_SIZE}
-            if cursor:
-                params["cursor"] = cursor
-            response = rest.get("/api/gateway/v1/budgets", params=params)
-            response.raise_for_status()
-            page = response.json()
-            rows.extend(page["data"])
-            # One page that could not total spend makes the whole listing's
-            # spend unreal, so the set's honest answer is the pessimistic one.
-            spend_available = spend_available and bool(page.get("spend_available"))
-            cursor = page.get("next_cursor")
-            if not cursor:
-                break
+    listing = langwatch.gateway_budgets.list()
+    rows: List[Dict[str, Any]] = listing["data"]
+    spend_available = bool(listing["spend_available"])
 
     per_key: Dict[str, List[BudgetSnapshot]] = {}
     per_seat_template: Dict[str, BudgetSnapshot] = {}
@@ -225,24 +185,16 @@ def load_budgets() -> BudgetsByKey:
 def reset_budget(budget_id: str, reason: str) -> Dict[str, Any]:
     """Close a billing period: move the manual window boundary, keep the
     books."""
-    return langwatch.gateway_admin.reset_budget(budget_id, reason=reason)
+    return langwatch.gateway_budgets.reset(budget_id, reason=reason)
 
 
 def set_budget_limit(budget_id: str, limit_usd: str) -> Dict[str, Any]:
     """Move a customer onto a different allowance. Only the limit changes; the
-    window and the scope are fixed at creation, and recorded spend is never
-    touched, so raising a cap admits traffic again without rewriting history.
-
-    SDK-GAP: the python SDK has no ``update_budget``. The TypeScript SDK's
-    ``budgets.update(id, {limit_usd})`` is this exact call. Swap it in once
-    the python facade grows the method.
+    window, the scope and the cycle anchor are fixed at creation, and recorded
+    spend is never touched, so raising a cap admits traffic again without
+    rewriting history.
     """
-    with _rest() as rest:
-        response = rest.patch(
-            f"/api/gateway/v1/budgets/{budget_id}", json={"limit_usd": limit_usd}
-        )
-        response.raise_for_status()
-        return response.json()["budget"]
+    return langwatch.gateway_budgets.update(budget_id, limit_usd=limit_usd)
 
 
 # ── Spend analytics ─────────────────────────────────────────────────────
@@ -258,13 +210,17 @@ def seat_spend_since(from_iso: str) -> Dict[str, int]:
     already refusing its requests.
 
     Windows are epoch milliseconds on every spend route.
+
+    ``iter_summaries`` is lazy and walks the cursor to exhaustion, so a tenant
+    whose seats land on the second page is still metered. ``summaries_page``
+    is the single-page call, and a page is not the answer here.
     """
     try:
         start = int(datetime.fromisoformat(from_iso.replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         start = _now_ms() - 30 * 86_400_000
-    rows = langwatch.spend_events.summaries(
-        group_by="end_user", from_ms=start, to_ms=_now_ms(), limit=1000
+    rows = langwatch.spend_events.iter_summaries(
+        group_by="end_user", from_ms=start, to_ms=_now_ms()
     )
     return {row["key"]: row["cost"]["nano_usd"] for row in rows}
 

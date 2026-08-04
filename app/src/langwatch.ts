@@ -158,18 +158,13 @@ export interface BudgetsByKey {
  *
  * Money is taken as the integer nano-USD fields the rows carry, never parsed
  * out of the decimal display strings beside them.
- *
- * TODO-VALIDATE: confirm live rows carry limit_nano_usd and spent_nano_usd,
- * and that spent_nano_usd is null (not 0) on a response whose
- * spend_available is false, which is what makes the meter say "unknown"
- * instead of showing a confident zero.
  */
 export async function loadBudgets(): Promise<BudgetsByKey> {
   const response = await budgets.list();
   const perKey = new Map<string, BudgetSnapshot[]>();
   const perSeatTemplate = new Map<string, BudgetSnapshot>();
 
-  for (const budget of response.budgets) {
+  for (const budget of response.data) {
     const snapshot: BudgetSnapshot = {
       id: budget.id,
       name: budget.name,
@@ -233,18 +228,25 @@ export function setBudgetLimit(budgetId: string, limitUsd: string) {
  * gateway is already refusing its requests.
  *
  * Windows are epoch milliseconds on every spend route.
+ *
+ * `iterSummaries` is lazy and walks the cursor to exhaustion, so a tenant
+ * whose seats land on the second page is still metered. `summariesPage` is
+ * the single-page call, and a page is not the answer here.
  */
 export async function seatSpendSince(
   fromIso: string,
 ): Promise<Map<string, number>> {
   const from = new Date(fromIso).getTime();
-  const summaries = await spendEvents.summaries({
+  const spendBySeat = new Map<string, number>();
+  const rows = spendEvents.iterSummaries({
     groupBy: "end_user",
     from: Number.isFinite(from) ? from : Date.now() - 30 * 86_400_000,
     to: Date.now(),
-    limit: 1000,
   });
-  return new Map(summaries.data.map((row) => [row.key, row.cost.nano_usd] as const));
+  for await (const row of rows) {
+    spendBySeat.set(row.key, row.cost.nano_usd);
+  }
+  return spendBySeat;
 }
 
 export interface ReceiverStatus {

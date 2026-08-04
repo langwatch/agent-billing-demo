@@ -60,6 +60,11 @@ const WALK_PAGE_SIZE = 200;
  * Every spend event LangWatch holds for one key and window, keyed by request.
  * A request can have two (a settled event and the completion that supersedes
  * it), so the values are lists and the ledger applies its own replace rule.
+ *
+ * `iterate` is the lazy walk: it follows the cursor to exhaustion and yields
+ * one event at a time, so the run holds one page rather than the window.
+ * `listPage` is the single-page call, and a page is never the answer to
+ * "everything LangWatch holds".
  */
 async function walkEvents(params: {
   virtualKeyId: string;
@@ -67,25 +72,18 @@ async function walkEvents(params: {
   toMs: number;
 }): Promise<Map<string, SpendEvent[]>> {
   const byRequest = new Map<string, SpendEvent[]>();
-  let cursor: string | undefined;
-  do {
-    const page = await spendEvents.list({
-      from: params.fromMs,
-      to: params.toMs,
-      virtualKeyId: params.virtualKeyId,
-      limit: WALK_PAGE_SIZE,
-      cursor,
-    });
-    for (const event of page.data) {
-      const requestId = event.data.gateway_request_id;
-      const existing = byRequest.get(requestId);
-      if (existing) existing.push(event);
-      else byRequest.set(requestId, [event]);
-    }
-    // Null next_cursor is the only end of the walk: a full page is not a
-    // promise of more, and a short one is not a promise of the end.
-    cursor = page.next_cursor ?? undefined;
-  } while (cursor);
+  const events = spendEvents.iterate({
+    from: params.fromMs,
+    to: params.toMs,
+    virtualKeyId: params.virtualKeyId,
+    limit: WALK_PAGE_SIZE,
+  });
+  for await (const event of events) {
+    const requestId = event.data.gateway_request_id;
+    const existing = byRequest.get(requestId);
+    if (existing) existing.push(event);
+    else byRequest.set(requestId, [event]);
+  }
   return byRequest;
 }
 
@@ -110,21 +108,18 @@ async function main() {
   // Windows are epoch milliseconds on every spend route.
   //
   // /spend-summaries is cursor-paginated, so a checksum set is only complete
-  // once the cursor comes back null. Reading a single page would silently
-  // reconcile whatever keys happened to land on it and declare the rest
-  // clean, which is the one failure a reconciler must never have.
+  // once the cursor comes back null. `iterSummaries` walks it to exhaustion;
+  // `summariesPage` would hand back whatever keys happened to land on the
+  // first page and let the run declare the rest clean, which is the one
+  // failure a reconciler must never have.
   const summaryRows: SpendSummaryRow[] = [];
-  let summaryCursor: string | undefined;
-  do {
-    const page = await spendEvents.summaries({
-      groupBy: "virtual_key",
-      from: fromMs,
-      to: toMs,
-      cursor: summaryCursor,
-    });
-    summaryRows.push(...page.data);
-    summaryCursor = page.next_cursor ?? undefined;
-  } while (summaryCursor);
+  for await (const row of spendEvents.iterSummaries({
+    groupBy: "virtual_key",
+    from: fromMs,
+    to: toMs,
+  })) {
+    summaryRows.push(row);
+  }
 
   let clean = true;
   for (const remote of summaryRows) {

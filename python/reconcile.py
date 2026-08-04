@@ -69,24 +69,21 @@ def walk_events(virtual_key_id: str, from_ms: int, to_ms: int) -> dict[str, list
     """Every spend event LangWatch holds for one key and window, keyed by
     request. A request can have two (a settled event and the completion that
     supersedes it), so the values are lists and the ledger applies its own
-    replace rule."""
+    replace rule.
+
+    ``iterate`` is the lazy walk: it follows the cursor to exhaustion and
+    yields one event at a time, so the run holds one page rather than the
+    window. ``list_page`` is the single-page call, and a page is never the
+    answer to "everything LangWatch holds"."""
     by_request: dict[str, list[dict]] = {}
-    cursor: str | None = None
-    while True:
-        page = langwatch.spend_events.list(
-            from_ms=from_ms,
-            to_ms=to_ms,
-            virtual_key_id=virtual_key_id,
-            limit=WALK_PAGE_SIZE,
-            cursor=cursor,
-        )
-        for event in page["data"]:
-            by_request.setdefault(event["data"]["gateway_request_id"], []).append(event)
-        # A null next_cursor is the only end of the walk: a full page is not a
-        # promise of more, and a short one is not a promise of the end.
-        cursor = page.get("next_cursor")
-        if not cursor:
-            return by_request
+    for event in langwatch.spend_events.iterate(
+        from_ms=from_ms,
+        to_ms=to_ms,
+        virtual_key_id=virtual_key_id,
+        limit=WALK_PAGE_SIZE,
+    ):
+        by_request.setdefault(event["data"]["gateway_request_id"], []).append(event)
+    return by_request
 
 
 def main() -> int:
@@ -104,9 +101,9 @@ def main() -> int:
         for row in ledger.totals_by_virtual_key(from_iso, to_iso)
     }
 
-    # iter_summaries walks the cursor to exhaustion. summaries() would hand
-    # back only the first page, which would silently reconcile whatever keys
-    # landed on it and declare the rest clean.
+    # iter_summaries walks the cursor to exhaustion. summaries_page() would
+    # hand back only the first page, which would silently reconcile whatever
+    # keys landed on it and declare the rest clean.
     summaries = langwatch.spend_events.iter_summaries(
         group_by="virtual_key", from_ms=from_ms, to_ms=to_ms
     )

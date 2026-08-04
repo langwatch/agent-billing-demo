@@ -40,15 +40,21 @@ if (!process.env.LANGWATCH_API_KEY) {
 const existing = (await webhooks.list()).find((endpoint) => endpoint.url === url);
 const result = existing
   ? await webhooks.rollSecret(existing.id)
-  : await webhooks.create({ url, enabledEvents: BILLING_EVENTS });
+  : // Endpoint bodies are the wire shape: lowercase snake, in and out.
+    await webhooks.create({ url, enabled_events: BILLING_EVENTS });
 
 if (existing) {
   // Rolling only replaces the secret, so make sure the event list and the
   // status are what this app expects even if the endpoint predates it.
   await webhooks.update(existing.id, {
-    enabledEvents: BILLING_EVENTS,
+    enabled_events: BILLING_EVENTS,
     status: "active",
   });
+  // The secret just replaced stays valid for a day, and deliveries in flight
+  // are signed with both. Keeping it lets the receiver verify either one
+  // instead of refusing everything signed a moment before the roll.
+  const outgoing = process.env.APP_WEBHOOK_SECRET;
+  if (outgoing) writeEnv("APP_WEBHOOK_SECRET_PREVIOUS", outgoing);
 }
 
 writeEnv("APP_WEBHOOK_SECRET", result.secret);

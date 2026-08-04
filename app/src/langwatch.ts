@@ -220,11 +220,11 @@ export interface BudgetsByKey {
  * out of the decimal display strings beside them.
  */
 export async function loadBudgets(): Promise<BudgetsByKey> {
-  const response = await budgets.list();
+  const rows = await budgets.list();
   const perKey = new Map<string, BudgetSnapshot[]>();
   const perSeatTemplate = new Map<string, BudgetSnapshot>();
 
-  for (const budget of response.data) {
+  for (const budget of rows) {
     const snapshot: BudgetSnapshot = {
       id: budget.id,
       name: budget.name,
@@ -262,7 +262,24 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
     });
   }
 
-  return { perKey, perSeatTemplate, spendAvailable: response.spend_available };
+  return { perKey, perSeatTemplate, spendAvailable: spendAvailableAcross(rows) };
+}
+
+/**
+ * Whether the platform could total spend for the caps just read. A row whose
+ * spend could not be totalled carries null there rather than a stale figure,
+ * so a null is the signal.
+ *
+ * Per-seat templates are exempt: one allowance per person has no single total
+ * to report, so their null says the question does not apply rather than that
+ * the answer failed. Counting them would leave every tenant that offers
+ * per-seat caps permanently reading as degraded. Each seat's own figure comes
+ * from the spend summaries.
+ */
+function spendAvailableAcross(rows: Awaited<ReturnType<typeof budgets.list>>): boolean {
+  return !rows.some(
+    (budget) => budget.scope_type !== "attributed_user" && budget.spent_nano_usd === null,
+  );
 }
 
 /** Close a billing period: move the manual window boundary, keep the books. */

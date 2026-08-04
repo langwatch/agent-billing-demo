@@ -193,6 +193,23 @@ class BudgetsByKey:
     spend_available: bool
 
 
+def _spend_available_across(rows: List[Dict[str, Any]]) -> bool:
+    """Whether the platform could total spend for the caps just read. A row
+    whose spend could not be totalled carries null there rather than a stale
+    figure, so a null is the signal.
+
+    Per-seat templates are exempt: one allowance per person has no single total
+    to report, so their null says the question does not apply rather than that
+    the answer failed. Counting them would leave every tenant that offers
+    per-seat caps permanently reading as degraded. Each seat's own figure comes
+    from the spend summaries.
+    """
+    return not any(
+        row.get("scope_type") != "attributed_user" and row.get("spent_nano_usd") is None
+        for row in rows
+    )
+
+
 def load_budgets() -> BudgetsByKey:
     """Read every cap once. One list call covers every tenant on screen, which
     is what the owner console needs and what keeps a customer dashboard to a
@@ -202,14 +219,10 @@ def load_budgets() -> BudgetsByKey:
     out of the decimal display strings beside them.
 
     ``list()`` walks the cursor to exhaustion, so this is the complete set of
-    caps and not a first page; ``list_page()`` is the single-page call. Its
-    ``spend_available`` is the pessimistic answer across every page walked,
-    because one page that could not total spend makes the whole listing's
-    spend unreal.
+    caps and not a first page; ``list_page()`` is the single-page call.
     """
-    listing = langwatch.gateway_budgets.list()
-    rows: List[Dict[str, Any]] = listing["data"]
-    spend_available = bool(listing["spend_available"])
+    rows: List[Dict[str, Any]] = langwatch.gateway_budgets.list()
+    spend_available = _spend_available_across(rows)
 
     per_key: Dict[str, List[BudgetSnapshot]] = {}
     per_seat_template: Dict[str, BudgetSnapshot] = {}

@@ -73,9 +73,6 @@ function signupKey(name: string, resource: string): string {
 }
 
 export async function provisionTenant(name: string) {
-  // One instant for the whole signup: the anchor the tenant's monthly cycle
-  // is measured from, so its period starts the day it starts.
-  const cycleAnchorAt = new Date().toISOString();
   let replayed = false;
   const onIdempotentReplay = () => {
     replayed = true;
@@ -84,11 +81,13 @@ export async function provisionTenant(name: string) {
   const minted = await virtualKeys.create(
     {
       name,
-      description: `Tenant key for ${name} (provisioned by acme-agents)`,
+      description: `Tenant key for ${name} (ACME Agents signup)`,
     },
     { idempotencyKey: signupKey(name, "virtual-key"), onIdempotentReplay },
   );
   const vkId = minted.virtual_key.id;
+  // The tenant's own birth instant, and the same value on every retry.
+  const cycleAnchorAt = minted.virtual_key.created_at;
 
   const hardCap = await budgets.create(
     {
@@ -117,7 +116,7 @@ export async function provisionTenant(name: string) {
   const perUser = await budgets.create(
     {
       scope: { kind: "attributed_user", anchor_virtual_key_id: vkId },
-      name: `${name} per-user allowance`,
+      name: `${name} per-seat allowance`,
       window: "month",
       limit_usd: "1.00",
       on_breach: "block",

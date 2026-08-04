@@ -40,7 +40,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
 import langwatch
 
@@ -65,9 +64,6 @@ def _signup_key(name: str, resource: str) -> str:
 
 
 def provision_tenant(name: str) -> dict:
-    # One instant for the whole signup: the anchor the tenant's monthly cycle
-    # is measured from, so its period starts the day it starts.
-    cycle_anchor_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     replays: list[bool] = []
 
     def on_replay() -> None:
@@ -75,11 +71,13 @@ def provision_tenant(name: str) -> dict:
 
     minted = langwatch.virtual_keys.create(
         name=name,
-        description=f"Tenant key for {name} (provisioned by acme-agents)",
+        description=f"Tenant key for {name} (ACME Agents signup)",
         idempotency_key=_signup_key(name, "virtual-key"),
         on_idempotent_replay=on_replay,
     )
     vk_id = minted["virtual_key"]["id"]
+    # The tenant's own birth instant, and the same value on every retry.
+    cycle_anchor_at = minted["virtual_key"]["created_at"]
 
     hard_cap = langwatch.gateway_budgets.create(
         scope={"kind": "virtual_key", "virtual_key_id": vk_id},
@@ -103,7 +101,7 @@ def provision_tenant(name: str) -> dict:
     # until an explicit reset, and the platform rejects an anchor on one.
     per_user = langwatch.gateway_budgets.create(
         scope={"kind": "attributed_user", "anchor_virtual_key_id": vk_id},
-        name=f"{name} per-user allowance",
+        name=f"{name} per-seat allowance",
         window="month",
         limit_usd="1.00",
         on_breach="block",

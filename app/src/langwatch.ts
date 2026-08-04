@@ -105,11 +105,15 @@ function signupKey(name: string, resource: string): string {
  * - **An anchored cycle.** The seat allowance's month window starts at the
  *   instant the customer signed up, not on the calendar first. A customer who
  *   starts on the 30th gets a period that runs to the 30th.
+ *
+ * Those two properties depend on each other. An idempotency key covers the
+ * request BODY, so a retry that recomputes the anchor from the clock sends a
+ * different body under the same key and is refused as a mismatch rather than
+ * replayed. The anchor is therefore read from the virtual key the first call
+ * minted: it is the instant the tenant came into existence, and every retry
+ * gets the same key back and sends the same body.
  */
 export async function provisionTenant(name: string): Promise<ProvisionedTenant> {
-  // One instant for the whole signup: the anchor the customer's billing
-  // period is measured from.
-  const cycleAnchorAt = new Date().toISOString();
   let replayed = false;
   const onIdempotentReplay = () => {
     replayed = true;
@@ -123,6 +127,8 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
     { idempotencyKey: signupKey(name, "virtual-key"), onIdempotentReplay },
   );
   const virtualKeyId = minted.virtual_key.id;
+  // The tenant's own birth instant, and the same value on every retry.
+  const cycleAnchorAt = minted.virtual_key.created_at;
 
   const hardCap = await budgets.create(
     {

@@ -25,13 +25,34 @@ import sys
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from langwatch import (
+    WEBHOOK_SIGNATURE_HEADER,
+    WebhookSignatureVerificationError,
+    verify_webhook_signature,
+)
 
 from ledger import Ledger
-from verify_signature import DELIVERY_ID_HEADER, verify_signature
+
+#: Names the delivery, not an event: one delivery carries a whole batch, so
+#: this correlates logs and is never the dedup key. Dedup on the envelope
+#: ``id`` inside the body.
+DELIVERY_ID_HEADER = "X-LangWatch-Delivery-Id"
 
 PORT = int(os.environ.get("PY_RECEIVER_PORT", "4102"))
-SECRET = os.environ.get("PY_WEBHOOK_SECRET", "")
-if not SECRET:
+
+#: Every secret this receiver accepts right now, newest first. Rolling a
+#: secret leaves the previous one valid for a day, and a delivery sent mid
+#: rotation is signed with both, so holding the outgoing one in its own slot
+#: is what makes the swap invisible to the sender.
+SECRETS = [
+    secret
+    for secret in (
+        os.environ.get("PY_WEBHOOK_SECRET", ""),
+        os.environ.get("PY_WEBHOOK_SECRET_PREVIOUS", ""),
+    )
+    if secret
+]
+if not SECRETS:
     print("PY_WEBHOOK_SECRET is not set; refusing to start unverified.")
     sys.exit(1)
 
@@ -41,13 +62,20 @@ ledger = Ledger(str(Path(__file__).parent / "ledger.sqlite"))
 
 @app.post("/webhooks/langwatch")
 def receive():
-    # The signature covers the raw bytes, so verify before any parsing.
+    # The signature covers the raw bytes, so verify before any parsing. The
+    # SDK verifier takes every secret this receiver holds and raises rather
+    # than returning False, so a delivery cannot be trusted by forgetting to
+    # read a return value.
     raw_body = request.get_data()
-    if not verify_signature(
-        raw_body, request.headers.get("X-LangWatch-Signature"), SECRET
-    ):
-        print("rejected: bad or missing signature")
-        return jsonify({"error": "invalid signature"}), 401
+    try:
+        verify_webhook_signature(
+            body=raw_body,
+            header=request.headers.get(WEBHOOK_SIGNATURE_HEADER, ""),
+            secret=SECRETS,
+        )
+    except WebhookSignatureVerificationError as error:
+        print(f"rejected: {error.code}")
+        return jsonify({"error": error.code}), 401
 
     delivery_id = request.headers.get(DELIVERY_ID_HEADER, "unknown")
     body = json.loads(raw_body)

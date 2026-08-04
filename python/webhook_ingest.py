@@ -5,9 +5,9 @@ contract; this module is the version that lives inside the product.
 
 The contract, in four rules:
 
-1. Verify the HMAC over the EXACT raw bytes received. Parse afterwards. ``v1``
-   repeats during a secret rotation, so ANY ``v1`` matching accepts. That half
-   lives in ``verify_signature.py``, shared with the standalone receiver.
+1. Verify the HMAC over the EXACT raw bytes received, then parse. The SDK's
+   ``verify_webhook_signature`` is the verifier: it takes every secret this
+   receiver currently accepts, so a rotation has no refusing window.
 2. Dedup by envelope id. Delivery is at-least-once.
    ``X-LangWatch-Delivery-Id`` names the DELIVERY, which carries a whole
    batch, so it is a log correlation handle and never the dedup key.

@@ -1,4 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AppDatabase, BillingEvent } from "./db.js";
 
 /**
@@ -9,8 +8,9 @@ import type { AppDatabase, BillingEvent } from "./db.js";
  *
  * The contract, in four rules:
  *
- * 1. Verify the HMAC over the EXACT raw bytes received. Parse afterwards.
- *    `v1` repeats during a secret rotation, so ANY `v1` matching accepts.
+ * 1. Verify the HMAC over the EXACT raw bytes received, then parse. The SDK's
+ *    `verifyWebhookSignature` is the verifier: it takes every secret this
+ *    receiver currently accepts, so a rotation has no refusing window.
  * 2. Dedup by envelope id. Delivery is at-least-once. `X-LangWatch-Delivery-Id`
  *    names the DELIVERY, which carries a whole batch, so it is a log
  *    correlation handle and never the dedup key.
@@ -18,74 +18,23 @@ import type { AppDatabase, BillingEvent } from "./db.js";
  * 4. Answer 2xx only once the batch is durably stored, so a failed write
  *    makes LangWatch retry instead of dropping money on the floor.
  */
-export const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 /** Names the delivery, not an event: one delivery carries a whole batch. */
 export const DELIVERY_ID_HEADER = "X-LangWatch-Delivery-Id";
 
-export function verifySignature(params: {
-  rawBody: Buffer;
-  signatureHeader: string | undefined;
-  secret: string;
-  nowMs?: number;
-}): boolean {
-  // No header and no secret are both "cannot verify", which is a rejection.
-  if (!params.signatureHeader || !params.secret) return false;
-
-  const { timestamp, candidates } = parseSignatureHeader(params.signatureHeader);
-  if (!timestamp || candidates.length === 0) return false;
-
-  const timestampSeconds = Number(timestamp);
-  if (!Number.isFinite(timestampSeconds)) return false;
-  const nowSeconds = (params.nowMs ?? Date.now()) / 1000;
-  if (Math.abs(nowSeconds - timestampSeconds) > SIGNATURE_TOLERANCE_SECONDS) {
-    return false;
-  }
-
-  const expected = createHmac("sha256", params.secret)
-    .update(`${timestamp}.`)
-    .update(params.rawBody)
-    .digest("hex");
-
-  // Every candidate is compared even once one has matched, so the work does
-  // not depend on WHICH signature matched.
-  let matched = false;
-  for (const candidate of candidates) {
-    if (digestsMatch(expected, candidate)) matched = true;
-  }
-  return matched;
-}
-
 /**
- * The timestamp and EVERY `v1` the header carries. A rotation sends one per
- * currently valid secret, newest first: `t=...,v1=<new>,v1=<old>`.
+ * Every secret this receiver accepts right now, newest first.
+ *
+ * Rolling a secret leaves the previous one valid for a day, and a delivery
+ * mid-rotation is signed with both. Keeping the outgoing secret in its own
+ * slot is what lets the swap happen without dropping deliveries; the SDK
+ * verifier takes the list and accepts a delivery matching any of them.
  */
-function parseSignatureHeader(header: string): {
-  timestamp: string | null;
-  candidates: string[];
-} {
-  let timestamp: string | null = null;
-  const candidates: string[] = [];
-  for (const piece of header.split(",")) {
-    const eq = piece.indexOf("=");
-    if (eq <= 0) continue;
-    const key = piece.slice(0, eq).trim();
-    const value = piece.slice(eq + 1).trim();
-    if (key === "t") timestamp = value;
-    else if (key === "v1") candidates.push(value);
-  }
-  return { timestamp, candidates };
-}
-
-/**
- * Constant-time equality over the hex digests, length-safe. Compared as
- * text rather than decoded bytes: hex decoding accepts a malformed digest by
- * truncating it, which would compare a prefix instead of failing.
- */
-function digestsMatch(expected: string, candidate: string): boolean {
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(candidate, "utf8");
-  return a.length === b.length && timingSafeEqual(a, b);
+export function acceptedSecrets(): string[] {
+  return [
+    process.env.APP_WEBHOOK_SECRET ?? "",
+    process.env.APP_WEBHOOK_SECRET_PREVIOUS ?? "",
+  ].filter(Boolean);
 }
 
 export interface Envelope {

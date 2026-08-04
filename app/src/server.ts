@@ -33,9 +33,14 @@ import {
 import { nanoToUsd, nanoToUsdOrNull } from "./money.js";
 import { loadBudgetsOrDegrade, loadSeatSpend, usageFor } from "./usage.js";
 import {
+  WEBHOOK_SIGNATURE_HEADER,
+  WebhookSignatureVerificationError,
+  verifyWebhookSignature,
+} from "langwatch";
+import {
   DELIVERY_ID_HEADER,
+  acceptedSecrets,
   ingestEnvelope,
-  verifySignature,
   type Envelope,
 } from "./webhooks.js";
 
@@ -66,16 +71,32 @@ app.post(
   express.raw({ type: "*/*", limit: "2mb" }),
   (req, res) => {
     const rawBody = req.body as Buffer;
-    if (
-      !verifySignature({
-        rawBody,
-        signatureHeader: req.header("X-LangWatch-Signature"),
-        secret: WEBHOOK_SECRET,
-      })
-    ) {
-      console.warn("[webhook] rejected: bad or missing signature");
+    try {
+      // The SDK verifier over the raw bytes: it takes every secret this
+      // receiver currently accepts, so a delivery signed during a rotation
+      // verifies under either one.
+      verifyWebhookSignature({
+        body: rawBody,
+        header: req.header(WEBHOOK_SIGNATURE_HEADER) ?? "",
+        secret: acceptedSecrets(),
+      });
+    } catch (error) {
+      // A missing secret is this app's configuration mistake, not a bad
+      // delivery, and the verifier says so with a TypeError rather than a
+      // verification failure. Answering 401 there would blame the sender and
+      // hide a receiver that can no longer verify anything.
+      if (!(error instanceof WebhookSignatureVerificationError)) {
+        console.error("[webhook] cannot verify: no signing secret configured");
+        return res.status(500).json({
+          error: {
+            code: "receiver_misconfigured",
+            message: "This receiver has no signing secret configured.",
+          },
+        });
+      }
+      console.warn(`[webhook] rejected: ${error.code}`);
       return res.status(401).json({
-        error: { code: "invalid_signature", message: "Signature check failed." },
+        error: { code: error.code, message: "Signature check failed." },
       });
     }
 

@@ -1,8 +1,19 @@
 import express from "express";
 import { readFileSync } from "node:fs";
-import { DELIVERY_ID_HEADER, verifySignature } from "./verify-signature.js";
+import {
+  WEBHOOK_SIGNATURE_HEADER,
+  WebhookSignatureVerificationError,
+  verifyWebhookSignature,
+} from "langwatch";
 import { Ledger } from "./ledger.js";
 import "./env.js";
+
+/**
+ * Names the delivery, not an event: one delivery carries a whole batch, so
+ * this correlates logs and is never the dedup key. Dedup on the envelope
+ * `id` inside the body.
+ */
+const DELIVERY_ID_HEADER = "X-LangWatch-Delivery-Id";
 
 /**
  * The webhook receiver: LangWatch POSTs signed batches of event envelopes
@@ -22,8 +33,18 @@ import "./env.js";
  * plus idempotent ingest equals exactly-once accounting.
  */
 const PORT = Number(process.env.TS_RECEIVER_PORT ?? 4101);
-const SECRET = process.env.TS_WEBHOOK_SECRET ?? "";
-if (!SECRET) {
+
+/**
+ * Every secret this receiver accepts right now, newest first. Rolling a
+ * secret leaves the previous one valid for a day, and a delivery sent mid
+ * rotation is signed with both, so holding the outgoing one in its own slot
+ * is what makes the swap invisible to the sender.
+ */
+const SECRETS = [
+  process.env.TS_WEBHOOK_SECRET ?? "",
+  process.env.TS_WEBHOOK_SECRET_PREVIOUS ?? "",
+].filter(Boolean);
+if (SECRETS.length === 0) {
   console.error("TS_WEBHOOK_SECRET is not set; refusing to start unverified.");
   process.exit(1);
 }
@@ -55,14 +76,19 @@ app.use(express.raw({ type: "application/json", limit: "2mb" }));
 
 app.post("/webhooks/langwatch", (req, res) => {
   const rawBody = req.body as Buffer;
-  const ok = verifySignature({
-    rawBody,
-    signatureHeader: req.header("X-LangWatch-Signature"),
-    secret: SECRET,
-  });
-  if (!ok) {
-    console.warn("rejected: bad or missing signature");
-    return res.status(401).json({ error: "invalid signature" });
+  try {
+    // The SDK verifier, over the raw bytes and against every secret this
+    // receiver holds. It throws rather than returning false, so a delivery
+    // cannot be trusted by forgetting to read a return value.
+    verifyWebhookSignature({
+      body: rawBody,
+      header: req.header(WEBHOOK_SIGNATURE_HEADER) ?? "",
+      secret: SECRETS,
+    });
+  } catch (error) {
+    if (!(error instanceof WebhookSignatureVerificationError)) throw error;
+    console.warn(`rejected: ${error.code}`);
+    return res.status(401).json({ error: error.code });
   }
 
   const jam = jamMode();

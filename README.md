@@ -188,7 +188,9 @@ it is sent. It is not a repair.
 - **Switch customer**: the account menu swaps agents, transcripts, meter and
   event feed together. Nothing is shared between tenants but the code.
 - **Tamper**: `curl -X POST localhost:4100/webhooks/langwatch -d '{}'` and watch
-  the receiver reject the unsigned body.
+  the receiver reject the unsigned body with `malformed_header`. Change one
+  byte of a signed body and it comes back `invalid_signature`; re-send a
+  capture from an hour ago and it comes back `stale_timestamp`.
 
 ## How a customer comes to exist
 

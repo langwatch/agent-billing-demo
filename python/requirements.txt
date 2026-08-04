@@ -4,5 +4,5 @@ uvicorn[standard]>=0.30
 openai>=1.50
 # The official LangWatch python SDK. Local editable install while the
 # billing surfaces ship; flips to `langwatch>=<release>` at publish.
-# pip install -e ../../worktrees/billing-events/python-sdk
+# pip install -e ../../worktrees/billing-events/sdks/python
 langwatch

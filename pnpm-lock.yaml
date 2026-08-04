@@ -30,8 +30,8 @@ importers:
         specifier: ^4.21.0
         version: 4.22.2
       langwatch:
-        specifier: file:../../../worktrees/billing-events/typescript-sdk
-        version: file:../../worktrees/billing-events/typescript-sdk(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0))
+        specifier: file:../../../worktrees/billing-events/sdks/typescript
+        version: file:../../worktrees/billing-events/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0))
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.0
@@ -82,8 +82,8 @@ importers:
         specifier: ^4.21.0
         version: 4.22.2
       langwatch:
-        specifier: file:../../../worktrees/billing-events/typescript-sdk
-        version: file:../../worktrees/billing-events/typescript-sdk(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0))
+        specifier: file:../../../worktrees/billing-events/sdks/typescript
+        version: file:../../worktrees/billing-events/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0))
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.11
@@ -1451,8 +1451,8 @@ packages:
     resolution: {integrity: sha512-eTIzlVOSUR+JxdDFepEYcBMtZ9Qqdef+rnzWdRZuMbOywu5tO2w2N7rqjoANZ5k9vywhL6Br1VRjUIgTQx4E8w==}
     engines: {node: '>=6'}
 
-  langwatch@file:../../worktrees/billing-events/typescript-sdk:
-    resolution: {directory: ../../worktrees/billing-events/typescript-sdk, type: directory}
+  langwatch@file:../../worktrees/billing-events/sdks/typescript:
+    resolution: {directory: ../../worktrees/billing-events/sdks/typescript, type: directory}
     engines: {node: '>=20', pnpm: '>=8'}
     hasBin: true
     peerDependencies:
@@ -3385,7 +3385,7 @@ snapshots:
 
   kleur@3.0.3: {}
 
-  langwatch@file:../../worktrees/billing-events/typescript-sdk(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0)):
+  langwatch@file:../../worktrees/billing-events/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/api@1.9.0)(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-node@0.203.0(@opentelemetry/api@1.9.0)):
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/api-logs': 0.205.0

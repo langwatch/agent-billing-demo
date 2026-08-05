@@ -209,7 +209,7 @@ sequenceDiagram
     App->>LW: POST /budgets {attributed_user, month, $1, block, cycle_anchor_at: now}
     App->>App: store {vk id, secret, budget ids} on the customer row
     App-->>Browser: 201, redirect into the dashboard
-    Note over App,GW: from here the tenant chats via the gateway<br/>with its own key; seats need NO provisioning,<br/>their buckets appear on first spend
+    Note over App,GW: from here the tenant chats via the gateway<br/>with its own key. Seats need NO provisioning,<br/>their buckets appear on first spend
 ```
 
 Every one of those four creates carries an idempotency key derived from the
@@ -240,7 +240,7 @@ sequenceDiagram
     LW->>RX: POST batch {gateway.request.completed} signed t=,v1=[,v1=]
     RX->>RX: verify HMAC over raw body (5 min tolerance, any v1 may match)
     RX->>UI: ingest (dedup by envelope id), push over SSE
-    Note over LW,RX: a request whose confirmation never arrived is delivered<br/>as gateway.request.settled with null cost; if the real completion<br/>arrives later it SUPERSEDES the settled row: replace, never sum
+    Note over LW,RX: a request whose confirmation never arrived is delivered<br/>as gateway.request.settled with null cost. If the real completion<br/>arrives later it SUPERSEDES the settled row: replace, never sum
 
     App->>GW: chat until a cap is crossed
     GW-->>App: 402 {error: {code: budget_exceeded, meta: {budget_scope, budget_id, budget_window}}}
@@ -249,7 +249,7 @@ sequenceDiagram
     Note over LW,RX: budget events name their tenant directly:<br/>virtual_key_id and anchor_project_id are first-class
 
     App->>LW: POST /api/gateway/v1/budgets/:id/reset  (period close)
-    Note over LW: reset moves the manual window boundary;<br/>recorded spend and emitted events are immutable
+    Note over LW: reset moves the manual window boundary.<br/>Recorded spend and emitted events are immutable
     App->>GW: traffic admits again
 ```
 

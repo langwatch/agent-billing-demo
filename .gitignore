@@ -3,6 +3,10 @@ dist/
 *.sqlite
 *.sqlite-journal
 .env
+# copies of .env made while switching between provisioning modes, which hold
+# the same live keys .env does
+.env.bak*
+.env.local
 __pycache__/
 *.pyc
 .venv/

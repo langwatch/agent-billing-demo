@@ -10,6 +10,7 @@
     "dev:web": "pnpm --filter @acme/app dev:web",
     "dev:web:python": "pnpm --filter @acme/app dev:web:python",
     "setup:webhook": "pnpm --filter @acme/app exec tsx ../scripts/register-app-webhook.ts",
+    "setup:team": "pnpm --filter @acme/app exec tsx ../scripts/setup-team.ts",
     "receiver:ts": "pnpm --filter @acme/integration-ts receiver",
     "reconcile:ts": "pnpm --filter @acme/integration-ts reconcile",
     "provision:ts": "pnpm --filter @acme/integration-ts provision",

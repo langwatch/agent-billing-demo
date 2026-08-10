@@ -66,8 +66,8 @@ app/         the SaaS itself (:4100)
 ts/          the integration surfaces in TypeScript (standalone receiver on :4101)
 python/      the SAME integration surfaces in Python (receiver on :4102),
              plus the SaaS shell again as one FastAPI process (:4200)
-scripts/     seed two fictional tenants, register the app's webhook endpoint,
-             create the team customer projects go under
+scripts/     seed two fictional tenants, register both app shells' webhook
+             endpoints, create the team customer projects go under
 ```
 
 Both app shells consume the official LangWatch SDK for their language:
@@ -108,7 +108,7 @@ key with gateway permissions.
 cp .env.example .env      # fill in LANGWATCH_API_KEY, LANGWATCH_PROJECT_ID and the URLs
 pnpm install
 
-pnpm setup:webhook        # registers this app's receiver, writes APP_WEBHOOK_SECRET to .env
+pnpm setup:webhook        # registers both app shells' receivers, writes their secrets to .env
 pnpm build                # builds the browser app into app/web/dist
 pnpm dev                  # ACME Agents on http://localhost:4100
 ```

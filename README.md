@@ -8,7 +8,10 @@ platform meters every LLM call and rebills its customers, and it does so with
 
 - **Provisioning**: signing up a customer mints one virtual key (the tenant
   boundary), a hard cap, a soft cap, and a per-seat allowance, through the
-  official LangWatch SDKs (TypeScript and Python) with one org API key.
+  official LangWatch SDKs (TypeScript and Python) with one org API key. Flip
+  `LANGWATCH_PROVISION_MODE` to `project` and the same signup gives every
+  customer a LangWatch project of its own first, with the key scoped to it,
+  so their traces and costs land in a project only they are in.
 - **Request path**: chat calls the gateway on the OpenAI wire with the `user`
   field set. That one field is all the attribution the whole billing pipeline
   needs.
@@ -38,8 +41,8 @@ billing events that produced those numbers below it.
 
 When a cap is reached the customer gets a sentence, not a stack trace, and the
 message stays in the box so it can be retried. The wording follows the 402's
-`error.meta.budget_scope`: a personal allowance and a company cap are
-different problems.
+`error.meta.budget_scope`: a personal allowance, a company cap on the key and
+a company cap on the customer's own project are different problems.
 
 ![A blocked request explained in the customer's own terms](https://raw.githubusercontent.com/langwatch/pr-screenshots/main/billing-events-platform/demo-app-budget-blocked.png)
 
@@ -63,7 +66,8 @@ app/         the SaaS itself (:4100)
 ts/          the integration surfaces in TypeScript (standalone receiver on :4101)
 python/      the SAME integration surfaces in Python (receiver on :4102),
              plus the SaaS shell again as one FastAPI process (:4200)
-scripts/     seed two fictional tenants, register the app's webhook endpoint
+scripts/     seed two fictional tenants, register the app's webhook endpoint,
+             create the team customer projects go under
 ```
 
 Both app shells consume the official LangWatch SDK for their language:
@@ -107,6 +111,14 @@ pnpm install
 pnpm setup:webhook        # registers this app's receiver, writes APP_WEBHOOK_SECRET to .env
 pnpm build                # builds the browser app into app/web/dist
 pnpm dev                  # ACME Agents on http://localhost:4100
+```
+
+To provision a project per customer instead, run the one-time team setup and
+flip the mode:
+
+```bash
+pnpm setup:team           # creates the team customer projects go under, writes LANGWATCH_TEAM_ID
+# then in .env: LANGWATCH_PROVISION_MODE=project
 ```
 
 Open http://localhost:4100, create a workspace, add an agent, and chat. The
@@ -155,7 +167,9 @@ DEMO_API_TARGET=http://localhost:4200 pnpm dev:web
 The two shells keep separate databases (`app/app.sqlite` and
 `python/app_py.sqlite`) and separate webhook endpoints, so a tenant signed up
 on one does not appear on the other. Everything they read back, the caps, the
-spend and the delivered billing events, comes from the same LangWatch project.
+spend and the delivered billing events, comes from the same LangWatch
+organization: caps and spend are organization-wide reads, so they answer the
+same whether every tenant sits in one project or in a project each.
 
 ### Reconciling
 
@@ -180,8 +194,9 @@ it is sent. It is not a repair.
 
 - **Breach**: chat until a cap trips, or lower one from the owner console. The
   UI distinguishes "your allowance" from "your company's cap" using the 402's
-  `error.meta.budget_scope`, and the message you tried to send is handed back
-  for a retry.
+  `error.meta.budget_scope`, which arrives as `attributed_user`, `virtual_key`
+  or `project` depending on the cap that ran out, and the message you tried to
+  send is handed back for a retry.
 - **Period close**: the owner console resets the manual-window caps. Traffic
   admits again, the ledger keeps every recorded row, and the month-window seat
   allowances are left to roll over on their own.
@@ -194,6 +209,15 @@ it is sent. It is not a repair.
 
 ## How a customer comes to exist
 
+`LANGWATCH_PROVISION_MODE` decides what a signup creates. `virtual_key`, the
+default, mints one key per customer under `LANGWATCH_PROJECT_ID` and hangs
+every cap off that key. `project` creates the customer a LangWatch project of
+its own first, under the one team `pnpm setup:team` made, scopes the key to
+that project and points its traces there, and hangs the caps off the project.
+Either way `LANGWATCH_PROJECT_ID` stays the project these calls authenticate
+as: the customer's own project is data in the request bodies, never a change
+of who is calling.
+
 ```mermaid
 sequenceDiagram
     participant Browser
@@ -202,17 +226,23 @@ sequenceDiagram
     participant GW as AI Gateway
 
     Browser->>App: POST /api/customers {name, email}
+    alt provisioning mode is project
+        App->>LW: GET /api/projects, matching the customer name
+        App->>LW: POST /api/projects {name, teamId} when there is no match
+        LW-->>App: {project.id} and a service key this app never stores
+    end
     App->>LW: POST /api/gateway/v1/virtual-keys
+    Note over App,LW: in project mode the key carries scopes<br/>and trace_project_id for that project
     LW-->>App: {virtual_key.id, secret}  (secret shown once)
-    App->>LW: POST /budgets {virtual_key, manual, $5, block}
-    App->>LW: POST /budgets {virtual_key, manual, $2.50, warn}
+    App->>LW: POST /budgets {tenant scope, manual, $5, block}
+    App->>LW: POST /budgets {tenant scope, manual, $2.50, warn}
     App->>LW: POST /budgets {attributed_user, month, $1, block, cycle_anchor_at: now}
-    App->>App: store {vk id, secret, budget ids} on the customer row
+    App->>App: store {vk id, secret, budget ids, project id} on the customer row
     App-->>Browser: 201, redirect into the dashboard
-    Note over App,GW: from here the tenant chats via the gateway<br/>with its own key. Seats need NO provisioning,<br/>their buckets appear on first spend
+    Note over App,GW: the tenant scope is the customer's project when it has one<br/>and its virtual key otherwise. Seats need NO provisioning,<br/>their buckets appear on first spend
 ```
 
-Every one of those four creates carries an idempotency key derived from the
+Every one of those creates carries an idempotency key derived from the
 customer's name, so a double-submitted form or a retry after a timeout returns
 the SAME key and the SAME budgets rather than a second set, and the app says so
 instead of reporting a fresh provisioning. The monthly seat allowance carries a
@@ -220,10 +250,16 @@ instead of reporting a fresh provisioning. The monthly seat allowance carries a
 from the day they started rather than from the calendar first, and the usage
 meter shows the dates.
 
+The project create is the one call with no idempotency key, so the name does
+that job: the app looks for a project of the customer's name before creating
+one, and a retried signup finds the project the first attempt made instead of
+stacking a second one beside it.
+
 A name that is already taken never reaches the platform: the app checks first,
 answers `409 {"error": {"code": "customer_exists"}}` with the existing
 workspace, and offers to open it. If two sign-ups race past that check, the key
-minted a moment earlier is revoked rather than left orphaned.
+minted a moment earlier is revoked rather than left orphaned, and the project
+goes with it when this signup is the one that created it.
 
 ## How money flows (and what happens at the edges)
 
@@ -245,7 +281,7 @@ sequenceDiagram
     App->>GW: chat until a cap is crossed
     GW-->>App: 402 {error: {code: budget_exceeded, meta: {budget_scope, budget_id, budget_window}}}
     LW->>RX: gateway.budget.threshold_crossed, then gateway.budget.breached
-    Note over App: meta.budget_scope tells the app whether to say<br/>"your allowance ran out" (attributed_user)<br/>or "your company's cap ran out" (virtual_key)
+    Note over App: meta.budget_scope tells the app whether to say<br/>"your allowance ran out" (attributed_user)<br/>or "your company's cap ran out" (virtual_key, project)
     Note over LW,RX: budget events name their tenant directly:<br/>virtual_key_id and anchor_project_id are first-class
 
     App->>LW: POST /api/gateway/v1/budgets/:id/reset  (period close)

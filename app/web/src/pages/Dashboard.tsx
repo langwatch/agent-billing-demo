@@ -255,7 +255,15 @@ export function Dashboard() {
           : new ApiFailure(0, "unexpected_error", "The message could not be sent.");
       setChatFailure(failure);
       if (failure.code === "budget_exceeded") {
-        toast.error("Budget reached", failure.message);
+        // The 402 names the cap that ran out. A cap on the workspace's own
+        // project stops everyone here, so the toast says so instead of
+        // leaving the reader to guess whose budget it was.
+        const scope = (failure.details as { budget_scope?: string } | undefined)
+          ?.budget_scope;
+        toast.error(
+          scope === "project" ? "Workspace budget reached" : "Budget reached",
+          failure.message,
+        );
       } else {
         toast.error("Message failed", failure.message);
       }

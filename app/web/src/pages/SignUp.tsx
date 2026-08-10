@@ -16,6 +16,8 @@ interface SignUpResponse {
   customer: CustomerSummary;
   provisioned: {
     virtual_key_id: string;
+    /** The customer's own LangWatch project, when one was provisioned. */
+    langwatch_project_id: string | null;
     hard_cap_usd: number;
     soft_cap_usd: number;
     per_seat_cap_usd: number;

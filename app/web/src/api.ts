@@ -77,6 +77,11 @@ export interface CustomerSummary {
   id: number;
   name: string;
   virtual_key_id: string;
+  /**
+   * The customer's own LangWatch project, when the platform provisions one
+   * per customer. Empty when the virtual key is the whole tenant boundary.
+   */
+  langwatch_project_id: string;
   created_at: string;
   agent_count: number;
   seat_count: number;

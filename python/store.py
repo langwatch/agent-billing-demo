@@ -16,7 +16,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Set
+from typing import Any, Iterator, Set
 
 SCHEMA_VERSION = 3
 
@@ -73,6 +73,13 @@ def open_db(path: Path) -> None:
         _add_column(conn, "customers", "soft_cap_budget_id", "TEXT NOT NULL DEFAULT ''")
         _add_column(conn, "customers", "per_user_budget_id", "TEXT NOT NULL DEFAULT ''")
         _add_column(conn, "customers", "created_at", "TEXT NOT NULL DEFAULT ''")
+        # The customer's own LangWatch project in ``project`` provisioning
+        # mode: where its traces and costs land, and what its caps are scoped
+        # to. Empty in ``virtual_key`` mode, where the key is the whole
+        # boundary.
+        _add_column(
+            conn, "customers", "langwatch_project_id", "TEXT NOT NULL DEFAULT ''"
+        )
         _add_column(conn, "agents", "created_at", "TEXT NOT NULL DEFAULT ''")
 
         # Seats are unique per tenant, not globally: two customers may both
@@ -171,11 +178,19 @@ def _backfill_timestamps(conn: sqlite3.Connection) -> None:
 
 
 CUSTOMER_SUMMARY = """
-    SELECT c.id, c.name, c.virtual_key_id, c.created_at,
+    SELECT c.id, c.name, c.virtual_key_id, c.langwatch_project_id, c.created_at,
            (SELECT COUNT(*) FROM agents WHERE customer_id = c.id) AS agent_count,
            (SELECT COUNT(*) FROM seats WHERE customer_id = c.id) AS seat_count
     FROM customers c
 """
+
+
+def tenant_anchor(customer: Any) -> str:
+    """What this customer's caps and per-seat allowance hang off on the
+    platform: its own project when it has one, its virtual key otherwise. The
+    billing ledger stays keyed by the virtual key either way, because that is
+    the id a billing event carries."""
+    return customer["langwatch_project_id"] or customer["virtual_key_id"]
 
 
 def seat_email_for(raw: object, company_name: str) -> str:

@@ -12,7 +12,7 @@
   "dependencies": {
     "better-sqlite3": "^11.8.0",
     "express": "^4.21.0",
-    "langwatch": "file:../../../worktrees/billing-events/sdks/typescript"
+    "langwatch": "file:../../../worktrees/r1-trace-destination/sdks/typescript"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

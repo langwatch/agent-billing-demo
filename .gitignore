@@ -18,3 +18,6 @@ __pycache__/
 
 # local QA artifacts
 .qa/
+
+# local run artifacts (pids, tunnel and server logs)
+.run/

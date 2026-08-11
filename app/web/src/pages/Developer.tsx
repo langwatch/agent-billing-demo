@@ -73,7 +73,7 @@ export function Developer() {
   -H "Authorization: Bearer ${keyPlaceholder}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "openai/gpt-4o-mini",
+    "model": "openai/gpt-5-mini",
     "messages": [{"role": "user", "content": "hello"}],
     "user": "owner@workspace.example"
   }'`}

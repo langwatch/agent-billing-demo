@@ -16,12 +16,12 @@ const TENANTS = [
   {
     name: "ACME Corp",
     seat: "wile@acme.example",
-    agent: { name: "Support Bot", model: "openai/gpt-4o-mini" },
+    agent: { name: "Support Bot", model: "openai/gpt-5-mini" },
   },
   {
     name: "Globex Inc",
     seat: "hank@globex.example",
-    agent: { name: "Sales Bot", model: "openai/gpt-4o-mini" },
+    agent: { name: "Sales Bot", model: "openai/gpt-5-mini" },
   },
 ];
 

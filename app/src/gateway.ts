@@ -17,9 +17,9 @@ const GATEWAY_URL = process.env.LANGWATCH_GATEWAY_URL ?? "http://localhost:6560"
 
 /** The models the agent builder offers. Any gateway model id works. */
 export const MODELS = [
-  "openai/gpt-4o-mini",
-  "openai/gpt-4o",
-  "anthropic/claude-3-5-haiku-latest",
+  "openai/gpt-5-mini",
+  "openai/gpt-5",
+  "anthropic/claude-haiku-4-5-20251001",
 ] as const;
 
 export interface ChatCompletionMeta {

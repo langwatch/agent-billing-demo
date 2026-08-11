@@ -20,9 +20,9 @@ GATEWAY_URL = os.environ.get("LANGWATCH_GATEWAY_URL", "http://localhost:5561")
 
 #: The models the agent builder offers. Any gateway model id works.
 MODELS = (
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "anthropic/claude-3-5-haiku-latest",
+    "openai/gpt-5-mini",
+    "openai/gpt-5",
+    "anthropic/claude-haiku-4-5-20251001",
 )
 
 #: A request that hangs is worse than one that fails, so bound it.

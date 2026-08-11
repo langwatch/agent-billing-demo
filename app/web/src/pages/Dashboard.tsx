@@ -29,9 +29,9 @@ import { useLiveFeed } from "../liveFeed";
 import { useSession } from "../session";
 
 const MODELS = [
-  { id: "openai/gpt-4o-mini", label: "GPT-4o mini (fast, cheap)" },
-  { id: "openai/gpt-4o", label: "GPT-4o (most capable)" },
-  { id: "anthropic/claude-3-5-haiku-latest", label: "Claude 3.5 Haiku" },
+  { id: "openai/gpt-5-mini", label: "GPT-5 mini (fast, cheap)" },
+  { id: "openai/gpt-5", label: "GPT-5 (most capable)" },
+  { id: "anthropic/claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ];
 
 interface PendingMessage {

@@ -209,9 +209,20 @@ def provision_tenant(name: str) -> dict:
     }
 
 
-def register_webhook_endpoint(url: str) -> dict:
+def register_webhook_endpoint(address: str) -> dict:
+    """Register a receiver, over HTTPS or on an Amazon SQS queue.
+
+    ``DEMO_TRANSPORT=sqs`` reads the address as a queue URL rather than a
+    receiver URL; the events, the signature and the envelope are identical
+    either way.
+    """
+    destination = (
+        {"destination_kind": "sqs", "sqs": {"queue_url": address}}
+        if os.environ.get("DEMO_TRANSPORT", "http") == "sqs"
+        else {"url": address}
+    )
     created = langwatch.webhooks.create(
-        url=url,
+        **destination,
         enabled_events=[
             "gateway.request.completed",
             "gateway.request.settled",

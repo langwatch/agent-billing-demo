@@ -49,6 +49,7 @@ from errors import ApiError, bad_request, conflict, install_error_handlers, not_
 from gateway import MODELS, meta_string, open_chat_stream, read_gateway_failure
 from live_feed import SSE_HEADERS, LiveFeed
 from money import nano_to_usd, nano_to_usd_or_none
+from app_queue_consumer import start_queue_consumer
 from port_guard import assert_advertised_port_matches
 from store import (
     CUSTOMER_SUMMARY,
@@ -961,6 +962,19 @@ def browser_app(asset_path: str):
     if asset_path and candidate.is_file() and WEB_ROOT.resolve() in candidate.parents:
         return FileResponse(candidate)
     return FileResponse(WEB_ROOT / "index.html")
+
+
+# Which transport feeds the meters. The HTTP route is always mounted, so
+# switching costs nothing on this side: `sqs` simply also drains the queue, and
+# the endpoint registered in LangWatch is what decides where deliveries go.
+if os.environ.get("DEMO_TRANSPORT", "http") == "sqs":
+    start_queue_consumer(
+        db=db,
+        secrets=accepted_secrets(),
+        on_ingested=lambda row: feed.publish(
+            {"kind": "billing_event", "event": present_event(row)}
+        ),
+    )
 
 
 if __name__ == "__main__":

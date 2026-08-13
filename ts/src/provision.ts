@@ -221,10 +221,21 @@ export async function provisionTenant(name: string) {
   };
 }
 
-export async function registerWebhookEndpoint(url: string) {
+/**
+ * Register a receiver, over HTTPS or on an Amazon SQS queue.
+ *
+ * `DEMO_TRANSPORT=sqs` reads the address as a queue URL rather than a
+ * receiver URL; the events, the signature and the envelope are identical
+ * either way.
+ */
+export async function registerWebhookEndpoint(address: string) {
+  const destination =
+    (process.env.DEMO_TRANSPORT ?? "http") === "sqs"
+      ? { destination_kind: "sqs" as const, sqs: { queue_url: address } }
+      : { url: address };
   // Endpoint bodies are the wire shape: lowercase snake, in and out.
   const created = await webhooks.create({
-    url,
+    ...destination,
     enabled_events: [
       "gateway.request.completed",
       "gateway.request.settled",

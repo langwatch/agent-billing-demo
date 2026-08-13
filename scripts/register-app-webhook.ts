@@ -27,6 +27,17 @@ const BILLING_EVENTS = [
 ];
 
 /**
+ * Where deliveries go: an HTTPS route each shell hosts, or an Amazon SQS queue
+ * each shell drains. `DEMO_TRANSPORT` picks, and the queue URLs come from
+ * APP_QUEUE_URL and APP_PY_QUEUE_URL.
+ */
+const TRANSPORT = process.env.DEMO_TRANSPORT ?? "http";
+if (TRANSPORT !== "http" && TRANSPORT !== "sqs") {
+  console.error(`DEMO_TRANSPORT=${TRANSPORT} is not a transport; use http or sqs.`);
+  process.exit(1);
+}
+
+/**
  * The receivers this repository runs, each with the variable its shell reads
  * its secret from. A shell that is not running still gets an endpoint, which
  * costs nothing and means starting it later needs no second setup step.
@@ -35,14 +46,37 @@ const RECEIVERS = [
   {
     shell: "TypeScript app",
     url: `${process.env.APP_PUBLIC_URL ?? `http://localhost:${process.env.APP_PORT ?? "4100"}`}/webhooks/langwatch`,
+    queueUrl: process.env.APP_QUEUE_URL ?? "",
     envKey: "APP_WEBHOOK_SECRET",
   },
   {
     shell: "python app",
     url: `${process.env.APP_PY_PUBLIC_URL ?? `http://localhost:${process.env.APP_PY_PORT ?? "4200"}`}/webhooks/langwatch`,
+    queueUrl: process.env.APP_PY_QUEUE_URL ?? "",
     envKey: "PY_APP_WEBHOOK_SECRET",
   },
 ];
+
+/** The address this run registers, and the shape the create body takes. */
+function destinationOf(receiver: (typeof RECEIVERS)[number]) {
+  if (TRANSPORT !== "sqs") {
+    return { address: receiver.url, body: { url: receiver.url } };
+  }
+  if (!receiver.queueUrl) {
+    console.error(
+      `DEMO_TRANSPORT=sqs but the ${receiver.shell} has no queue URL. ` +
+        "Set APP_QUEUE_URL and APP_PY_QUEUE_URL in .env.",
+    );
+    process.exit(1);
+  }
+  return {
+    address: receiver.queueUrl,
+    body: {
+      destination_kind: "sqs" as const,
+      sqs: { queue_url: receiver.queueUrl },
+    },
+  };
+}
 
 if (!process.env.LANGWATCH_API_KEY) {
   console.error("LANGWATCH_API_KEY is not set. Fill in .env first.");
@@ -54,11 +88,17 @@ if (!process.env.LANGWATCH_API_KEY) {
 const endpoints = await webhooks.list();
 
 for (const receiver of RECEIVERS) {
-  const existing = endpoints.find((endpoint) => endpoint.url === receiver.url);
+  const { address, body } = destinationOf(receiver);
+  // Match on whichever address this endpoint actually carries. Matching on
+  // `url` alone would never find a queue endpoint, so every run would mint
+  // another one.
+  const existing = endpoints.find(
+    (endpoint) => (endpoint.sqs?.queue_url ?? endpoint.url) === address,
+  );
   const result = existing
     ? await webhooks.rollSecret(existing.id)
     : // Endpoint bodies are the wire shape: lowercase snake, in and out.
-      await webhooks.create({ url: receiver.url, enabled_events: BILLING_EVENTS });
+      await webhooks.create({ ...body, enabled_events: BILLING_EVENTS });
 
   if (existing) {
     // Rolling only replaces the secret, so make sure the event list and the
@@ -77,7 +117,7 @@ for (const receiver of RECEIVERS) {
   writeEnv(receiver.envKey, result.secret);
 
   console.log(
-    `${existing ? "Rolled the secret for" : "Registered"} ${receiver.url}\n` +
+    `${existing ? "Rolled the secret for" : "Registered"} ${address}\n` +
       `  shell:    ${receiver.shell}\n` +
       `  endpoint: ${result.id}\n` +
       `  events:   ${BILLING_EVENTS.join(", ")}\n` +

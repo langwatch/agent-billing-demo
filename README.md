@@ -197,6 +197,39 @@ no-op no matter what is missing from your books. `POST /spend-events/replay`
 is a redelivery test tool, for proving an endpoint receives and verifies what
 it is sent. It is not a repair.
 
+### Receiving on a queue instead of a URL
+
+An endpoint can deliver to an Amazon SQS queue instead of an HTTPS route, and
+this repository implements both, in both languages. Set `DEMO_TRANSPORT=sqs`,
+give each receiver its own standard queue, and run setup again:
+
+```bash
+APP_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/<queue>
+APP_PY_QUEUE_URL=...   # each receiver needs its OWN queue: two consumers on
+TS_QUEUE_URL=...       # one queue split the messages rather than both seeing
+PY_QUEUE_URL=...       # everything
+
+DEMO_TRANSPORT=sqs pnpm setup:webhook
+DEMO_TRANSPORT=sqs pnpm dev            # the app drains its queue in-process
+pnpm --filter @acme/integration-ts exec tsx src/queue-consumer.ts
+cd python && .venv/bin/python queue_consumer.py
+```
+
+**The one thing that catches every consumer**: `ReceiveMessage` returns no
+message attributes unless you ask for them by name. Pass
+`MessageAttributeNames: ["All"]`. Forget it and the signature is simply not
+there, so your consumer rejects every message it is sent while the body in
+front of you looks perfectly fine. All four consumers here carry that line
+with a comment saying why.
+
+Nothing else changes. The message body is byte-identical to the HTTP body,
+`{"batch": [...]}`, and the signature, the delivery id and the attempt ride as
+message attributes under the same names they use as HTTP headers, so the
+verification code is the same call over the same bytes. What differs is how
+you say "retry": delete the message only after the batch is durably ingested,
+and leave it alone otherwise. It returns after the visibility timeout and,
+after `maxReceiveCount` attempts, lands in the dead letter queue.
+
 ### The edges worth trying
 
 - **Breach**: chat until a cap trips, or lower one from the owner console. The

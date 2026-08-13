@@ -40,6 +40,7 @@ import {
   verifyWebhookSignature,
 } from "langwatch";
 import { assertAdvertisedPortMatches } from "./portGuard.js";
+import { startQueueConsumer } from "./queueConsumer.js";
 import {
   DELIVERY_ID_HEADER,
   acceptedSecrets,
@@ -922,6 +923,17 @@ assertAdvertisedPortMatches({
   boundPort: PORT,
   advertisedUrl: PUBLIC_URL,
 });
+
+// Which transport feeds the meters. The HTTP route below is always mounted, so
+// switching costs nothing on this side: `sqs` simply also drains the queue, and
+// the endpoint registered in LangWatch is what decides where deliveries go.
+if ((process.env.DEMO_TRANSPORT ?? "http") === "sqs") {
+  startQueueConsumer({
+    db,
+    onIngested: (row) =>
+      feed.publish({ kind: "billing_event", event: presentEvent(row) }),
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`ACME Agents running on ${PUBLIC_URL}`);

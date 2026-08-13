@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm --filter @acme/app build",
     "dev": "pnpm --filter @acme/app dev",
-    "dev:python": "cd python && .venv/bin/uvicorn app:app --port ${APP_PY_PORT:-4200} --reload",
+    "dev:python": "cd python && .venv/bin/python app.py",
     "dev:web": "pnpm --filter @acme/app dev:web",
     "dev:web:python": "pnpm --filter @acme/app dev:web:python",
     "setup:webhook": "pnpm --filter @acme/app exec tsx ../scripts/register-app-webhook.ts",

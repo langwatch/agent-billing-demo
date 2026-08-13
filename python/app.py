@@ -49,6 +49,7 @@ from errors import ApiError, bad_request, conflict, install_error_handlers, not_
 from gateway import MODELS, meta_string, open_chat_stream, read_gateway_failure
 from live_feed import SSE_HEADERS, LiveFeed
 from money import nano_to_usd, nano_to_usd_or_none
+from port_guard import assert_advertised_port_matches
 from store import (
     CUSTOMER_SUMMARY,
     connect,
@@ -969,4 +970,10 @@ if __name__ == "__main__":
         log.warning(
             "PY_APP_WEBHOOK_SECRET is not set: billing events will be rejected."
         )
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    assert_advertised_port_matches(
+        label="python app", bound_port=PORT, advertised_url=PUBLIC_URL
+    )
+    # An import string, not the app object: the reloader re-imports the module
+    # in a child process, which it can only do by name. Handing it the object
+    # makes uvicorn refuse to reload.
+    uvicorn.run("app:app", host="127.0.0.1", port=PORT, reload=True)

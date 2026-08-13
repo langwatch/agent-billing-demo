@@ -144,9 +144,15 @@ streaming chat, the live meters, the event feed, the owner console and the
 period close all work against either.
 
 ```bash
-pnpm dev                  # TypeScript app on :4100, serving the UI at :4100
-pnpm dev:python           # Python app on :4200, serving the same UI at :4200
+pnpm dev                  # TypeScript app on APP_PORT, serving the UI there too
+pnpm dev:python           # Python app on APP_PY_PORT, serving the same UI there
 ```
+
+Both ports come from `.env` (`APP_PORT`, default 4100; `APP_PY_PORT`, default
+4200). Each shell prints the port it bound next to the URL it advertises to
+LangWatch, and refuses to start when the two disagree, because a receiver
+registered on one port and listening on another looks like a broken webhook
+rather than a wrong number.
 
 Both serve the built bundle from `app/web/dist`, so each port is a complete
 app on its own. For hot reload, Vite runs on :4300 and proxies to whichever
@@ -157,11 +163,12 @@ pnpm dev:web              # :4300 against the TypeScript app
 pnpm dev:web:python       # :4300 against the Python app
 ```
 
-`DEMO_API_TARGET` is the knob underneath, a full origin, so any other target
-works too:
+Both read the shell's port out of `.env`, so there is no port to repeat.
+`DEMO_API_TARGET` still overrides the origin outright when the backend is
+somewhere else entirely, a tunnel or another host:
 
 ```bash
-DEMO_API_TARGET=http://localhost:4200 pnpm dev:web
+DEMO_API_TARGET=https://acme.ngrok.app pnpm dev:web
 ```
 
 The two shells keep separate databases (`app/app.sqlite` and

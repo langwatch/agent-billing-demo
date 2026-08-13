@@ -39,6 +39,7 @@ import {
   WebhookSignatureVerificationError,
   verifyWebhookSignature,
 } from "langwatch";
+import { assertAdvertisedPortMatches } from "./portGuard.js";
 import {
   DELIVERY_ID_HEADER,
   acceptedSecrets,
@@ -915,6 +916,12 @@ if (existsSync(webRoot)) {
       .send("The browser app is not built yet. Run: pnpm --filter @acme/app build");
   });
 }
+
+assertAdvertisedPortMatches({
+  label: "TypeScript app",
+  boundPort: PORT,
+  advertisedUrl: PUBLIC_URL,
+});
 
 app.listen(PORT, () => {
   console.log(`ACME Agents running on ${PUBLIC_URL}`);

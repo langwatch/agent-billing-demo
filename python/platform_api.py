@@ -4,7 +4,8 @@ spend analytics are SDK calls, never hand-rolled HTTP.
 
 Two scopes are in play and they authenticate differently, which the SDK hides:
 virtual keys and budgets are project-scoped (the project id rides along),
-webhook endpoints and spend analytics are organization-scoped.
+webhook endpoints, spend analytics, teams and projects are
+organization-scoped.
 """
 
 import os
@@ -17,6 +18,29 @@ import langwatch
 BASE_URL = os.environ.get("LANGWATCH_BASE_URL", "http://localhost:5560")
 API_KEY = os.environ.get("LANGWATCH_API_KEY", "")
 PROJECT_ID = os.environ.get("LANGWATCH_PROJECT_ID", "")
+
+#: What a signup provisions.
+#:
+#: - ``virtual_key``: one virtual key per customer, under the control
+#:   project. The key is the whole tenant boundary and every cap hangs off it.
+#: - ``project``: a LangWatch project per customer, under one stable team,
+#:   with the key scoped to that project and pointed at it, so each customer's
+#:   traces and costs land in a project of their own.
+#:
+#: LANGWATCH_PROJECT_ID stays the control project either way: it is what the
+#: virtual key and budget calls authenticate as. A customer's own project is
+#: data in those request bodies, never a change of who is calling.
+PROVISION_MODE = (
+    "project" if os.environ.get("LANGWATCH_PROVISION_MODE") == "project" else "virtual_key"
+)
+
+#: The team every customer project goes under. ``pnpm setup:team`` fills it in.
+TEAM_ID = os.environ.get("LANGWATCH_TEAM_ID", "")
+
+#: What a customer project is tagged with: the stack that produces its traces,
+#: which is this app, not whatever the customer builds on top of it.
+PROJECT_LANGUAGE = "python"
+PROJECT_FRAMEWORK = "openai"
 
 CAPS = {"hard_usd": "5.00", "soft_usd": "2.50", "per_seat_usd": "1.00"}
 
@@ -35,6 +59,10 @@ class ProvisionedTenant:
     cycle_anchor_at: str
     #: True when the platform replayed an earlier signup instead of creating.
     replayed: bool
+    #: The customer's own project in ``project`` mode; None otherwise.
+    project_id: Optional[str]
+    #: True when this signup created that project rather than finding it.
+    project_created: bool
 
 
 def _signup_key(name: str, resource: str) -> str:
@@ -45,17 +73,79 @@ def _signup_key(name: str, resource: str) -> str:
     instead of a second set. The name is normalized the same way the workspace
     uniqueness check normalizes it: case and surrounding space are not what
     makes two signups different.
+
+    The mode namespaces the keys, because it decides what a signup creates:
+    the same customer provisioned the other way asks for different resources,
+    and a key that meant one body must never be replayed for another.
     """
     identity = "-".join(name.strip().lower().split())
-    return f"acme-agents:signup:{identity}:{resource}"
+    mode = "project:" if PROVISION_MODE == "project" else ""
+    return f"acme-agents:signup:{mode}{identity}:{resource}"
+
+
+def _find_project_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """The project with this exact name, or None.
+
+    ``list()`` walks every page, so a match that landed on the second page
+    still counts; ``list_page()`` is the single-page call, and a page is not
+    the answer here.
+    """
+    return next(
+        (project for project in langwatch.projects.list() if project["name"] == name),
+        None,
+    )
+
+
+def ensure_customer_project(name: str) -> Tuple[str, bool]:
+    """The customer's own project, created once and found again after that.
+
+    Returns the project id and whether this call created it.
+
+    Project creates take no idempotency key, so the name carries that weight
+    instead: a retried signup finds the project the first attempt made rather
+    than stacking a second one beside it. The name is the customer's own, the
+    same identity the workspace uniqueness check and the idempotency keys are
+    derived from, and the listing never returns archived projects, so a
+    customer that was rolled back is provisioned fresh.
+    """
+    if not TEAM_ID:
+        raise RuntimeError(
+            "LANGWATCH_TEAM_ID is not set. Run `pnpm setup:team` once before"
+            " provisioning customers in project mode."
+        )
+    existing = _find_project_by_name(name)
+    if existing:
+        return existing["id"], False
+
+    # The create also mints a service key for the new project. It is
+    # deliberately not stored: the customer's runtime credential is the
+    # virtual key, and one credential per tenant is the whole point.
+    created = langwatch.projects.create(
+        name=name,
+        team_id=TEAM_ID,
+        language=PROJECT_LANGUAGE,
+        framework=PROJECT_FRAMEWORK,
+    )
+    return created["id"], True
+
+
+def archive_project(project_id: str) -> None:
+    """Archive a project this signup created and could not hand to anyone."""
+    langwatch.projects.archive(project_id)
 
 
 def provision_tenant(name: str) -> ProvisionedTenant:
-    """The four calls a signup makes.
+    """The four calls a signup makes, or five in project mode.
 
-    1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
-       tenant's gateway credential, and every budget and spend row hangs off
-       its id. The secret comes back exactly once; store it like a password.
+    0. In ``project`` mode only: create the customer's own project under the
+       team from LANGWATCH_TEAM_ID. Everything below then hangs off that
+       project instead of off the key, and the key is scoped to it and sends
+       its traces there, so the customer's traffic, spend and traces are one
+       thing the platform separates rather than something this app filters.
+    1. Mint a virtual key. The VK IS the tenant boundary in ``virtual_key``
+       mode: its secret is the tenant's gateway credential, and every budget
+       and spend row hangs off its id. The secret comes back exactly once;
+       store it like a password.
     2. A hard cap: ``on_breach: "block"`` on a ``manual`` window. A manual
        window accrues until an explicit reset, which is how a billing period
        closes without ever mutating recorded spend.
@@ -95,18 +185,50 @@ def provision_tenant(name: str) -> ProvisionedTenant:
     def on_replay() -> None:
         replays.append(True)
 
+    # In project mode the customer's project comes first: the key is scoped to
+    # it and points its traces at it, and the caps are attached to it.
+    project_id: Optional[str] = None
+    project_created = False
+    if PROVISION_MODE == "project":
+        project_id, project_created = ensure_customer_project(name)
+
+    key_scoping: Dict[str, Any] = (
+        {
+            "scopes": [{"scope_type": "project", "scope_id": project_id}],
+            # Where this key's traces and costs land. Not a scope: it grants
+            # the key nothing, it decides which project sees the traffic.
+            "trace_project_id": project_id,
+        }
+        if project_id
+        else {}
+    )
     minted = langwatch.virtual_keys.create(
         name=name,
         description=f"Tenant key for {name} (ACME Agents signup)",
         idempotency_key=_signup_key(name, "virtual-key"),
         on_idempotent_replay=on_replay,
+        **key_scoping,
     )
     virtual_key_id = minted["virtual_key"]["id"]
     # The tenant's own birth instant, and the same value on every retry.
     cycle_anchor_at = minted["virtual_key"]["created_at"]
 
+    # What the caps hang off. A project cap covers every key that ever points
+    # at that project, so in project mode the tenant boundary outlives any one
+    # key; in virtual key mode the key IS the boundary.
+    tenant_scope: Dict[str, Any] = (
+        {"kind": "project", "project_id": project_id}
+        if project_id
+        else {"kind": "virtual_key", "virtual_key_id": virtual_key_id}
+    )
+    seat_scope: Dict[str, Any] = (
+        {"kind": "attributed_user", "anchor_project_id": project_id}
+        if project_id
+        else {"kind": "attributed_user", "anchor_virtual_key_id": virtual_key_id}
+    )
+
     hard_cap = langwatch.gateway_budgets.create(
-        scope={"kind": "virtual_key", "virtual_key_id": virtual_key_id},
+        scope=tenant_scope,
         name=f"{name} hard cap",
         window="manual",
         limit_usd=CAPS["hard_usd"],
@@ -115,7 +237,7 @@ def provision_tenant(name: str) -> ProvisionedTenant:
         on_idempotent_replay=on_replay,
     )
     soft_cap = langwatch.gateway_budgets.create(
-        scope={"kind": "virtual_key", "virtual_key_id": virtual_key_id},
+        scope=tenant_scope,
         name=f"{name} soft cap",
         window="manual",
         limit_usd=CAPS["soft_usd"],
@@ -126,7 +248,7 @@ def provision_tenant(name: str) -> ProvisionedTenant:
     # A cycle anchor belongs to a windowed budget: a manual window accrues
     # until an explicit reset, and the platform rejects an anchor on one.
     per_user = langwatch.gateway_budgets.create(
-        scope={"kind": "attributed_user", "anchor_virtual_key_id": virtual_key_id},
+        scope=seat_scope,
         name=f"{name} per-seat allowance",
         window="month",
         limit_usd=CAPS["per_seat_usd"],
@@ -144,6 +266,8 @@ def provision_tenant(name: str) -> ProvisionedTenant:
         per_user_budget_id=per_user["id"],
         cycle_anchor_at=per_user.get("cycle_anchor_at") or cycle_anchor_at,
         replayed=bool(replays),
+        project_id=project_id,
+        project_created=project_created,
     )
 
 
@@ -184,10 +308,15 @@ class BudgetSnapshot:
 
 
 @dataclass
-class BudgetsByKey:
-    #: Virtual key id to the caps that apply to the whole tenant.
-    per_key: Dict[str, List[BudgetSnapshot]]
-    #: Virtual key id to the per-seat template anchored to it.
+class BudgetsByAnchor:
+    """Caps indexed by the id they hang off, which is the customer's project
+    when it has one and its virtual key otherwise. Both are "the tenant" as
+    far as a cap is concerned, so both land in the same map and a meter reads
+    it with one lookup whichever way the customer was provisioned."""
+
+    #: Tenant anchor id to the caps that apply to the whole tenant.
+    per_tenant: Dict[str, List[BudgetSnapshot]]
+    #: Tenant anchor id to the per-seat template anchored to it.
     per_seat_template: Dict[str, BudgetSnapshot]
     #: False when the platform could not total spend; show it as unknown.
     spend_available: bool
@@ -210,7 +339,7 @@ def _spend_available_across(rows: List[Dict[str, Any]]) -> bool:
     )
 
 
-def load_budgets() -> BudgetsByKey:
+def load_budgets() -> BudgetsByAnchor:
     """Read every cap once. One list call covers every tenant on screen, which
     is what the owner console needs and what keeps a customer dashboard to a
     single round trip.
@@ -224,7 +353,7 @@ def load_budgets() -> BudgetsByKey:
     rows: List[Dict[str, Any]] = langwatch.gateway_budgets.list()
     spend_available = _spend_available_across(rows)
 
-    per_key: Dict[str, List[BudgetSnapshot]] = {}
+    per_tenant: Dict[str, List[BudgetSnapshot]] = {}
     per_seat_template: Dict[str, BudgetSnapshot] = {}
     for row in rows:
         if row.get("archived_at"):
@@ -242,19 +371,20 @@ def load_budgets() -> BudgetsByKey:
             resets_at=row.get("resets_at") or "",
             cycle_anchor_at=row.get("cycle_anchor_at"),
         )
-        # attributed_user rows are templates anchored to a virtual key: one row
-        # that defines the allowance every seat of that tenant gets.
+        # attributed_user rows are templates anchored to a virtual key or to a
+        # project: one row that defines the allowance every seat of that
+        # tenant gets. Either way the anchor is the scope id.
         if snapshot.scope_type == "attributed_user":
             per_seat_template[snapshot.scope_id] = snapshot
-        elif snapshot.scope_type == "virtual_key":
-            per_key.setdefault(snapshot.scope_id, []).append(snapshot)
+        elif snapshot.scope_type in ("virtual_key", "project"):
+            per_tenant.setdefault(snapshot.scope_id, []).append(snapshot)
 
     # Blocking caps first, then the widest limit, so the meter leads with the
     # number that actually stops traffic.
-    for caps in per_key.values():
+    for caps in per_tenant.values():
         caps.sort(key=lambda cap: (cap.on_breach != "block", -(cap.limit_nano_usd or 0)))
 
-    return BudgetsByKey(per_key, per_seat_template, spend_available)
+    return BudgetsByAnchor(per_tenant, per_seat_template, spend_available)
 
 
 def reset_budget(budget_id: str, reason: str) -> Dict[str, Any]:
@@ -339,14 +469,14 @@ def receiver_status(url: str) -> ReceiverStatus:
     )
 
 
-def budgets_for_key(
-    data: BudgetsByKey, virtual_key_id: str
+def budgets_for_tenant(
+    data: BudgetsByAnchor, tenant_anchor_id: str
 ) -> Tuple[List[BudgetSnapshot], Optional[BudgetSnapshot]]:
     """The caps that apply to a workspace, resolved from the platform rather
     than from the ids stored at sign-up. Budgets live on LangWatch, so the
     platform is the source of truth: a cap added or replaced there is managed
     here too, and a workspace provisioned by an earlier revision still gets
     every one of its caps reset."""
-    return data.per_key.get(virtual_key_id, []), data.per_seat_template.get(
-        virtual_key_id
+    return data.per_tenant.get(tenant_anchor_id, []), data.per_seat_template.get(
+        tenant_anchor_id
     )

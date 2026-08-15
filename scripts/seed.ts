@@ -16,12 +16,12 @@ const TENANTS = [
   {
     name: "ACME Corp",
     seat: "wile@acme.example",
-    agent: { name: "Support Bot", model: "openai/gpt-4o-mini" },
+    agent: { name: "Support Bot", model: "openai/gpt-5-mini" },
   },
   {
     name: "Globex Inc",
     seat: "hank@globex.example",
-    agent: { name: "Sales Bot", model: "openai/gpt-4o-mini" },
+    agent: { name: "Sales Bot", model: "openai/gpt-5-mini" },
   },
 ];
 
@@ -39,8 +39,8 @@ for (const tenant of TENANTS) {
     .prepare(
       `INSERT INTO customers (
          name, virtual_key_id, virtual_key_secret, hard_cap_budget_id,
-         soft_cap_budget_id, per_user_budget_id, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         soft_cap_budget_id, per_user_budget_id, langwatch_project_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       tenant.name,
@@ -49,6 +49,7 @@ for (const tenant of TENANTS) {
       provisioned.hardCapBudgetId,
       provisioned.softCapBudgetId,
       provisioned.perUserBudgetId,
+      provisioned.projectId ?? "",
       now,
     );
   const customerId = Number(customer.lastInsertRowid);
@@ -66,6 +67,7 @@ for (const tenant of TENANTS) {
     now,
   );
   console.log(
-    `Seeded ${tenant.name}: VK ${provisioned.virtualKeyId}, hard cap ${provisioned.hardCapBudgetId}`,
+    `Seeded ${tenant.name}: VK ${provisioned.virtualKeyId}, hard cap ${provisioned.hardCapBudgetId}` +
+      (provisioned.projectId ? `, project ${provisioned.projectId}` : ""),
   );
 }

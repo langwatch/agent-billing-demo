@@ -151,6 +151,14 @@ export function Admin() {
                               <p className="truncate font-mono text-xs text-slate-500">
                                 {customer.virtual_key_id}
                               </p>
+                              {/* Present only when this customer has a
+                                  LangWatch project of its own, which is what
+                                  its traces and costs are attributed to. */}
+                              {customer.langwatch_project_id && (
+                                <p className="truncate font-mono text-xs text-slate-400">
+                                  {customer.langwatch_project_id}
+                                </p>
+                              )}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">

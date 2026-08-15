@@ -12,7 +12,12 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Sequence
 
 from money import nano_to_usd, nano_to_usd_or_none
-from platform_api import BudgetSnapshot, BudgetsByKey, load_budgets, seat_spend_since
+from platform_api import (
+    BudgetSnapshot,
+    BudgetsByAnchor,
+    load_budgets,
+    seat_spend_since,
+)
 
 log = logging.getLogger("acme.usage")
 
@@ -113,16 +118,24 @@ def usage_for(
     conn: sqlite3.Connection,
     *,
     virtual_key_id: str,
+    tenant_anchor_id: str,
     seats: Sequence[str],
-    budget_data: Optional[BudgetsByKey],
+    budget_data: Optional[BudgetsByAnchor],
     seat_spend: Optional[Dict[str, int]],
     degraded: Optional[str],
 ) -> Dict[str, Any]:
     """Build one tenant's meter. ``budget_data`` is passed in so the owner
-    console can read every tenant's caps with a single platform call."""
+    console can read every tenant's caps with a single platform call.
+
+    ``tenant_anchor_id`` is what this tenant's caps hang off: its own project
+    when it has one, its virtual key otherwise. The ledger stays keyed by the
+    virtual key either way, because that is what a billing event carries.
+    """
     ledger = ledger_totals(conn, virtual_key_id)
-    caps = budget_data.per_key.get(virtual_key_id, []) if budget_data else []
-    template = budget_data.per_seat_template.get(virtual_key_id) if budget_data else None
+    caps = budget_data.per_tenant.get(tenant_anchor_id, []) if budget_data else []
+    template = (
+        budget_data.per_seat_template.get(tenant_anchor_id) if budget_data else None
+    )
 
     budgets = [_to_view(cap) for cap in caps]
     if not degraded and budget_data and not budget_data.spend_available:
@@ -192,7 +205,7 @@ def load_budgets_or_degrade() -> Dict[str, Any]:
         return {"data": None, "degraded": "the LangWatch API is not reachable right now"}
 
 
-def load_seat_spend(budget_data: Optional[BudgetsByKey]) -> Optional[Dict[str, int]]:
+def load_seat_spend(budget_data: Optional[BudgetsByAnchor]) -> Optional[Dict[str, int]]:
     """Per-seat spend for the oldest allowance period on screen, in one call,
     as integer nano-USD. Best effort: without it the meters fall back to the
     local ledger, which is complete but only as fresh as the last webhook

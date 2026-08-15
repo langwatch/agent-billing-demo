@@ -49,7 +49,16 @@ from errors import ApiError, bad_request, conflict, install_error_handlers, not_
 from gateway import MODELS, meta_string, open_chat_stream, read_gateway_failure
 from live_feed import SSE_HEADERS, LiveFeed
 from money import nano_to_usd, nano_to_usd_or_none
-from store import CUSTOMER_SUMMARY, connect, now_iso, open_db, seat_email_for
+from app_queue_consumer import start_queue_consumer
+from port_guard import assert_advertised_port_matches
+from store import (
+    CUSTOMER_SUMMARY,
+    connect,
+    now_iso,
+    open_db,
+    seat_email_for,
+    tenant_anchor,
+)
 from usage import load_budgets_or_degrade, load_seat_spend, usage_for
 from webhook_ingest import ingest_envelope
 
@@ -178,8 +187,9 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
             cursor = conn.execute(
                 """INSERT INTO customers (
                        name, virtual_key_id, virtual_key_secret, hard_cap_budget_id,
-                       soft_cap_budget_id, per_user_budget_id, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       soft_cap_budget_id, per_user_budget_id, langwatch_project_id,
+                       created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name,
                     provisioned.virtual_key_id,
@@ -187,6 +197,7 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
                     provisioned.hard_cap_budget_id,
                     provisioned.soft_cap_budget_id,
                     provisioned.per_user_budget_id,
+                    provisioned.project_id or "",
                     stamp,
                 ),
             )
@@ -204,6 +215,15 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
             )
         except Exception as revoke_error:
             log.error("[langwatch:revoke-orphan] %s", revoke_error)
+        # The project goes with it, but only when this signup created it: the
+        # winner of the race may be sitting in the project this one found.
+        if provisioned.project_created and provisioned.project_id:
+            try:
+                await run_in_threadpool(
+                    platform_api.archive_project, provisioned.project_id
+                )
+            except Exception as archive_error:
+                log.error("[langwatch:archive-orphan-project] %s", archive_error)
         with db() as conn:
             winner = conn.execute(
                 "SELECT id, name FROM customers WHERE name = ? COLLATE NOCASE", (name,)
@@ -227,6 +247,9 @@ async def signup(body: SignUpIn) -> Dict[str, Any]:
         "customer": customer,
         "provisioned": {
             "virtual_key_id": provisioned.virtual_key_id,
+            # The customer's own project, when the platform provisioned one
+            # for them. Null when the virtual key is the whole tenant boundary.
+            "langwatch_project_id": provisioned.project_id,
             "hard_cap_usd": float(platform_api.CAPS["hard_usd"]),
             "soft_cap_usd": float(platform_api.CAPS["soft_usd"]),
             "per_seat_cap_usd": float(platform_api.CAPS["per_seat_usd"]),
@@ -450,12 +473,34 @@ def frame(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def budget_breach_copy(scope: Optional[str]) -> tuple[str, str]:
+    """What a customer reads when a cap stopped their request, chosen by the
+    scope the platform says ran out. A seat allowance is one person's; a
+    project cap and a virtual key cap both belong to the whole workspace, so
+    they say so and point at the person who can lift it."""
+    if scope == "attributed_user":
+        return (
+            "You have used up your personal AI allowance for this period.",
+            "Your allowance resets at the start of next month.",
+        )
+    if scope == "project":
+        return (
+            "Your workspace has spent its whole AI budget for this period.",
+            "Every seat here is paused until an admin closes the billing period.",
+        )
+    return (
+        "Your workspace has reached its AI budget for this period.",
+        "An admin can close the billing period to admit traffic again.",
+    )
+
+
 def chat_failure(error: Exception) -> ApiError:
     """Budget breaches come back from the gateway as 402 with machine-readable
     meta saying WHICH cap ran out: ``budget_scope: "attributed_user"`` is this
-    seat's allowance, ``"virtual_key"`` is the whole workspace's cap. That
-    distinction is the difference between "you hit your limit" and "your
-    company hit its limit", so it survives all the way to the screen.
+    seat's allowance, ``"virtual_key"`` and ``"project"`` are the whole
+    workspace's cap. That distinction is the difference between "you hit your
+    limit" and "your company hit its limit", so it survives all the way to the
+    screen.
 
     Scope kinds and windows are lowercase snake on the wire, so the branch
     below matches one spelling and does not normalize anything first.
@@ -465,16 +510,12 @@ def chat_failure(error: Exception) -> ApiError:
     details = read_gateway_failure(error)
     if details and details.code == "budget_exceeded":
         scope = meta_string(details.meta, "budget_scope")
-        per_seat = scope == "attributed_user"
+        message, hint = budget_breach_copy(scope)
         return ApiError(
             402,
             "budget_exceeded",
-            "You have used up your personal AI allowance for this period."
-            if per_seat
-            else "Your workspace has reached its AI budget for this period.",
-            "Your allowance resets at the start of next month."
-            if per_seat
-            else "An admin can close the billing period to admit traffic again.",
+            message,
+            hint,
             {
                 "budget_scope": scope,
                 "budget_id": meta_string(details.meta, "budget_id"),
@@ -507,6 +548,7 @@ async def usage(customer_id: int) -> Dict[str, Any]:
     with db() as conn:
         customer = require_customer(conn, customer_id)
         virtual_key_id = customer["virtual_key_id"]
+        anchor_id = tenant_anchor(customer)
         seats = seat_emails(conn, customer["id"])
     budgets = await run_in_threadpool(load_budgets_or_degrade)
     seat_spend = await run_in_threadpool(load_seat_spend, budgets["data"])
@@ -514,6 +556,7 @@ async def usage(customer_id: int) -> Dict[str, Any]:
         return usage_for(
             conn,
             virtual_key_id=virtual_key_id,
+            tenant_anchor_id=anchor_id,
             seats=seats,
             budget_data=budgets["data"],
             seat_spend=seat_spend,
@@ -557,6 +600,7 @@ async def admin_overview() -> Dict[str, Any]:
                 "usage": usage_for(
                     conn,
                     virtual_key_id=customer["virtual_key_id"],
+                    tenant_anchor_id=tenant_anchor(customer),
                     seats=seat_emails(conn, customer["id"]),
                     budget_data=budgets["data"],
                     seat_spend=seat_spend,
@@ -615,7 +659,7 @@ async def close_period(customer_id: int, body: ClosePeriodIn) -> Dict[str, Any]:
     immutable and reconciliation is unaffected by a period close."""
     with db() as conn:
         customer = require_customer(conn, customer_id)
-        virtual_key_id = customer["virtual_key_id"]
+        anchor_id = tenant_anchor(customer)
 
     # Closing a period moves the manual window boundary. The per-seat allowance
     # rides a month window and rolls over on its own, so it is deliberately
@@ -623,7 +667,7 @@ async def close_period(customer_id: int, body: ClosePeriodIn) -> Dict[str, Any]:
     # fresh personal allowance.
     caps = [
         cap
-        for cap in await customer_budgets(virtual_key_id)
+        for cap in await customer_budgets(anchor_id)
         if cap.window == "manual"
         and (
             body.budget == "all"
@@ -657,9 +701,9 @@ async def set_cap(customer_id: int, budget_id: str, body: LimitIn) -> Dict[str, 
     raising a limit admits traffic again with the books intact."""
     with db() as conn:
         customer = require_customer(conn, customer_id)
-        virtual_key_id = customer["virtual_key_id"]
+        anchor_id = tenant_anchor(customer)
 
-    owned = await customer_budgets(virtual_key_id)
+    owned = await customer_budgets(anchor_id)
     if not any(cap.id == budget_id for cap in owned):
         raise not_found("budget_not_found", "That cap does not belong to this workspace.")
     limit = body.limit_usd
@@ -772,7 +816,7 @@ async def receive(request: Request):
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-async def customer_budgets(virtual_key_id: str) -> List[platform_api.BudgetSnapshot]:
+async def customer_budgets(tenant_anchor_id: str) -> List[platform_api.BudgetSnapshot]:
     """The caps that apply to a workspace, resolved from the platform rather
     than from the ids stored at sign-up."""
     budgets = await run_in_threadpool(load_budgets_or_degrade)
@@ -780,8 +824,8 @@ async def customer_budgets(virtual_key_id: str) -> List[platform_api.BudgetSnaps
         raise upstream_error(
             "read this workspace's caps", RuntimeError("budgets unavailable")
         )
-    per_key, template = platform_api.budgets_for_key(budgets["data"], virtual_key_id)
-    return [*per_key, template] if template else list(per_key)
+    caps, template = platform_api.budgets_for_tenant(budgets["data"], tenant_anchor_id)
+    return [*caps, template] if template else list(caps)
 
 
 def require_customer(conn: sqlite3.Connection, customer_id: int) -> sqlite3.Row:
@@ -920,6 +964,19 @@ def browser_app(asset_path: str):
     return FileResponse(WEB_ROOT / "index.html")
 
 
+# Which transport feeds the meters. The HTTP route is always mounted, so
+# switching costs nothing on this side: `sqs` simply also drains the queue, and
+# the endpoint registered in LangWatch is what decides where deliveries go.
+if os.environ.get("DEMO_TRANSPORT", "http") == "sqs":
+    start_queue_consumer(
+        db=db,
+        secrets=accepted_secrets(),
+        on_ingested=lambda row: feed.publish(
+            {"kind": "billing_event", "event": present_event(row)}
+        ),
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -927,4 +984,10 @@ if __name__ == "__main__":
         log.warning(
             "PY_APP_WEBHOOK_SECRET is not set: billing events will be rejected."
         )
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    assert_advertised_port_matches(
+        label="python app", bound_port=PORT, advertised_url=PUBLIC_URL
+    )
+    # An import string, not the app object: the reloader re-imports the module
+    # in a child process, which it can only do by name. Handing it the object
+    # makes uvicorn refuse to reload.
+    uvicorn.run("app:app", host="127.0.0.1", port=PORT, reload=True)

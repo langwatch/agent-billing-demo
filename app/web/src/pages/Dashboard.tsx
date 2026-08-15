@@ -29,9 +29,9 @@ import { useLiveFeed } from "../liveFeed";
 import { useSession } from "../session";
 
 const MODELS = [
-  { id: "openai/gpt-4o-mini", label: "GPT-4o mini (fast, cheap)" },
-  { id: "openai/gpt-4o", label: "GPT-4o (most capable)" },
-  { id: "anthropic/claude-3-5-haiku-latest", label: "Claude 3.5 Haiku" },
+  { id: "openai/gpt-5-mini", label: "GPT-5 mini (fast, cheap)" },
+  { id: "openai/gpt-5", label: "GPT-5 (most capable)" },
+  { id: "anthropic/claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ];
 
 interface PendingMessage {
@@ -255,7 +255,15 @@ export function Dashboard() {
           : new ApiFailure(0, "unexpected_error", "The message could not be sent.");
       setChatFailure(failure);
       if (failure.code === "budget_exceeded") {
-        toast.error("Budget reached", failure.message);
+        // The 402 names the cap that ran out. A cap on the workspace's own
+        // project stops everyone here, so the toast says so instead of
+        // leaving the reader to guess whose budget it was.
+        const scope = (failure.details as { budget_scope?: string } | undefined)
+          ?.budget_scope;
+        toast.error(
+          scope === "project" ? "Workspace budget reached" : "Budget reached",
+          failure.message,
+        );
       } else {
         toast.error("Message failed", failure.message);
       }

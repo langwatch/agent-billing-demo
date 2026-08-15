@@ -3,7 +3,7 @@ import { nanoToUsd, nanoToUsdOrNull } from "./money.js";
 import {
   loadBudgets,
   seatSpendSince,
-  type BudgetsByKey,
+  type BudgetsByAnchor,
   type BudgetSnapshot,
 } from "./langwatch.js";
 
@@ -171,16 +171,23 @@ export function usageFor(
   db: AppDatabase,
   params: {
     virtualKeyId: string;
+    /**
+     * What this tenant's caps hang off: its own project when it has one,
+     * its virtual key otherwise. The ledger stays keyed by the virtual key
+     * either way, because that is what a billing event carries.
+     */
+    tenantAnchorId: string;
     seats: string[];
-    budgetData: BudgetsByKey | null;
+    budgetData: BudgetsByAnchor | null;
     /** Platform spend per end user; falls back to the local ledger. */
     seatSpend?: Map<string, number> | null;
     degraded: string | null;
   },
 ): UsageView {
   const ledger = ledgerTotals(db, params.virtualKeyId);
-  const caps = params.budgetData?.perKey.get(params.virtualKeyId) ?? [];
-  const template = params.budgetData?.perSeatTemplate.get(params.virtualKeyId) ?? null;
+  const caps = params.budgetData?.perTenant.get(params.tenantAnchorId) ?? [];
+  const template =
+    params.budgetData?.perSeatTemplate.get(params.tenantAnchorId) ?? null;
 
   const budgets = caps.map(toView);
   let degraded = params.degraded;
@@ -244,7 +251,7 @@ export function usageFor(
  * failing the page: the local ledger still has the request-level truth.
  */
 export async function loadBudgetsOrDegrade(): Promise<{
-  data: BudgetsByKey | null;
+  data: BudgetsByAnchor | null;
   degraded: string | null;
 }> {
   try {
@@ -265,7 +272,7 @@ export async function loadBudgetsOrDegrade(): Promise<{
  * delivery.
  */
 export async function loadSeatSpend(
-  budgetData: BudgetsByKey | null,
+  budgetData: BudgetsByAnchor | null,
 ): Promise<Map<string, number> | null> {
   if (!budgetData || budgetData.perSeatTemplate.size === 0) return null;
   const periodStarts = [...budgetData.perSeatTemplate.values()]

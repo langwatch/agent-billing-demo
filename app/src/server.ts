@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import "./env.js";
 import {
   openDb,
+  tenantAnchor,
   type Agent,
   type AppUser,
   type BillingEvent,
@@ -23,6 +24,7 @@ import {
 import { LiveFeed } from "./events.js";
 import { MODELS, metaString, readGatewayFailure, streamChatAsTenant } from "./gateway.js";
 import {
+  archiveProject,
   CAPS,
   provisionTenant,
   receiverStatus,
@@ -37,6 +39,8 @@ import {
   WebhookSignatureVerificationError,
   verifyWebhookSignature,
 } from "langwatch";
+import { assertAdvertisedPortMatches } from "./portGuard.js";
+import { startQueueConsumer } from "./queueConsumer.js";
 import {
   DELIVERY_ID_HEADER,
   acceptedSecrets,
@@ -173,8 +177,8 @@ app.post("/api/customers", async (req, res) => {
           .prepare(
             `INSERT INTO customers (
                name, virtual_key_id, virtual_key_secret, hard_cap_budget_id,
-               soft_cap_budget_id, per_user_budget_id, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+               soft_cap_budget_id, per_user_budget_id, langwatch_project_id, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             name,
@@ -183,6 +187,7 @@ app.post("/api/customers", async (req, res) => {
             provisioned.hardCapBudgetId,
             provisioned.softCapBudgetId,
             provisioned.perUserBudgetId,
+            provisioned.projectId ?? "",
             now,
           );
         const id = Number(inserted.lastInsertRowid);
@@ -200,6 +205,13 @@ app.post("/api/customers", async (req, res) => {
         .catch((revokeError) =>
           console.error("[langwatch:revoke-orphan]", revokeError),
         );
+      // The project goes with it, but only when this signup created it: the
+      // winner of the race may be sitting in the project this one found.
+      if (provisioned.projectCreated && provisioned.projectId) {
+        await archiveProject(provisioned.projectId).catch((archiveError) =>
+          console.error("[langwatch:archive-orphan-project]", archiveError),
+        );
+      }
       if (isUniqueViolation(error, "customers.name")) {
         const winner = db
           .prepare("SELECT id, name FROM customers WHERE name = ? COLLATE NOCASE")
@@ -226,6 +238,9 @@ app.post("/api/customers", async (req, res) => {
       customer,
       provisioned: {
         virtual_key_id: provisioned.virtualKeyId,
+        // The customer's own project, when the platform provisioned one for
+        // them. Null when the virtual key is the whole tenant boundary.
+        langwatch_project_id: provisioned.projectId,
         hard_cap_usd: Number(CAPS.hardUsd),
         soft_cap_usd: Number(CAPS.softUsd),
         per_seat_cap_usd: Number(CAPS.perSeatUsd),
@@ -446,9 +461,10 @@ app.post("/api/chat", async (req, res) => {
 /**
  * Budget breaches come back from the gateway as 402 with machine-readable
  * meta saying WHICH cap ran out: `budget_scope: "attributed_user"` is this
- * seat's allowance, `"virtual_key"` is the whole workspace's cap. That
- * distinction is the difference between "you hit your limit" and "your
- * company hit its limit", so it survives all the way to the screen.
+ * seat's allowance, `"virtual_key"` and `"project"` are the whole
+ * workspace's cap. That distinction is the difference between "you hit your
+ * limit" and "your company hit its limit", so it survives all the way to
+ * the screen.
  *
  * Scope kinds and windows are lowercase snake on the wire, so the branch
  * below matches one spelling and does not normalize anything first.
@@ -458,22 +474,12 @@ function chatFailure(error: unknown): ApiError {
   const details = readGatewayFailure(error);
   if (details?.code === "budget_exceeded") {
     const scope = metaString(details.meta, "budget_scope");
-    const perSeat = scope === "attributed_user";
-    return new ApiError(
-      402,
-      "budget_exceeded",
-      perSeat
-        ? "You have used up your personal AI allowance for this period."
-        : "Your workspace has reached its AI budget for this period.",
-      perSeat
-        ? "Your allowance resets at the start of next month."
-        : "An admin can close the billing period to admit traffic again.",
-      {
-        budget_scope: scope,
-        budget_id: metaString(details.meta, "budget_id"),
-        budget_window: metaString(details.meta, "budget_window"),
-      },
-    );
+    const copy = budgetBreachCopy(scope);
+    return new ApiError(402, "budget_exceeded", copy.message, copy.hint, {
+      budget_scope: scope,
+      budget_id: metaString(details.meta, "budget_id"),
+      budget_window: metaString(details.meta, "budget_window"),
+    });
   }
   if (details?.code === "end_user_required") {
     return new ApiError(
@@ -493,6 +499,31 @@ function chatFailure(error: unknown): ApiError {
     );
   }
   return upstreamError("reach the model gateway", error);
+}
+
+/**
+ * What a customer reads when a cap stopped their request, chosen by the
+ * scope the platform says ran out. A seat allowance is one person's; a
+ * project cap and a virtual key cap both belong to the whole workspace, so
+ * they say so and point at the person who can lift it.
+ */
+function budgetBreachCopy(scope: string | null): { message: string; hint: string } {
+  if (scope === "attributed_user") {
+    return {
+      message: "You have used up your personal AI allowance for this period.",
+      hint: "Your allowance resets at the start of next month.",
+    };
+  }
+  if (scope === "project") {
+    return {
+      message: "Your workspace has spent its whole AI budget for this period.",
+      hint: "Every seat here is paused until an admin closes the billing period.",
+    };
+  }
+  return {
+    message: "Your workspace has reached its AI budget for this period.",
+    hint: "An admin can close the billing period to admit traffic again.",
+  };
 }
 
 function startEventStream(res: Response) {
@@ -519,6 +550,7 @@ app.get("/api/customers/:customerId/usage", async (req, res) => {
     res.json(
       usageFor(db, {
         virtualKeyId: customer.virtual_key_id,
+        tenantAnchorId: tenantAnchor(customer),
         seats: seatEmails(customer.id),
         budgetData: data,
         seatSpend,
@@ -564,6 +596,7 @@ app.get("/api/admin/overview", async (_req, res) => {
       customer,
       usage: usageFor(db, {
         virtualKeyId: customer.virtual_key_id,
+        tenantAnchorId: tenantAnchor(customer),
         seats: seatEmails(customer.id),
         budgetData: data,
         seatSpend,
@@ -733,9 +766,10 @@ async function customerBudgets(customer: Customer) {
   if (!data) {
     throw upstreamError("read this workspace's caps", new Error("budgets unavailable"));
   }
-  const perKey = data.perKey.get(customer.virtual_key_id) ?? [];
-  const template = data.perSeatTemplate.get(customer.virtual_key_id);
-  return template ? [...perKey, template] : perKey;
+  const anchor = tenantAnchor(customer);
+  const caps = data.perTenant.get(anchor) ?? [];
+  const template = data.perSeatTemplate.get(anchor);
+  return template ? [...caps, template] : caps;
 }
 
 function requireCustomer(raw: string | undefined): Customer {
@@ -761,7 +795,7 @@ function requireAgent(raw: string | undefined, customerId: number): Agent {
 function customerSummary(id: number) {
   return db
     .prepare(
-      `SELECT c.id, c.name, c.virtual_key_id, c.created_at,
+      `SELECT c.id, c.name, c.virtual_key_id, c.langwatch_project_id, c.created_at,
               (SELECT COUNT(*) FROM agents WHERE customer_id = c.id) AS agent_count,
               (SELECT COUNT(*) FROM seats WHERE customer_id = c.id) AS seat_count
        FROM customers c WHERE c.id = ?`,
@@ -770,6 +804,7 @@ function customerSummary(id: number) {
     id: number;
     name: string;
     virtual_key_id: string;
+    langwatch_project_id: string;
     created_at: string;
     agent_count: number;
     seat_count: number;
@@ -779,7 +814,7 @@ function customerSummary(id: number) {
 function allCustomerSummaries() {
   return db
     .prepare(
-      `SELECT c.id, c.name, c.virtual_key_id, c.created_at,
+      `SELECT c.id, c.name, c.virtual_key_id, c.langwatch_project_id, c.created_at,
               (SELECT COUNT(*) FROM agents WHERE customer_id = c.id) AS agent_count,
               (SELECT COUNT(*) FROM seats WHERE customer_id = c.id) AS seat_count
        FROM customers c ORDER BY c.id`,
@@ -880,6 +915,23 @@ if (existsSync(webRoot)) {
       .status(503)
       .type("text/plain")
       .send("The browser app is not built yet. Run: pnpm --filter @acme/app build");
+  });
+}
+
+assertAdvertisedPortMatches({
+  label: "TypeScript app",
+  boundPort: PORT,
+  advertisedUrl: PUBLIC_URL,
+});
+
+// Which transport feeds the meters. The HTTP route below is always mounted, so
+// switching costs nothing on this side: `sqs` simply also drains the queue, and
+// the endpoint registered in LangWatch is what decides where deliveries go.
+if ((process.env.DEMO_TRANSPORT ?? "http") === "sqs") {
+  startQueueConsumer({
+    db,
+    onIngested: (row) =>
+      feed.publish({ kind: "billing_event", event: presentEvent(row) }),
   });
 }
 

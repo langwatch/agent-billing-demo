@@ -1,6 +1,8 @@
 import {
   GatewayBudgetsApiService,
+  ProjectsApiService,
   SpendEventsApiService,
+  TeamsApiService,
   VirtualKeysApiService,
   WebhooksApiService,
 } from "langwatch";
@@ -12,7 +14,7 @@ import {
  *
  * Two scopes are in play and they authenticate differently, which the SDK
  * hides: virtual keys and budgets are project-scoped (the project id rides
- * along), webhook endpoints are organization-scoped.
+ * along), webhook endpoints, teams and projects are organization-scoped.
  */
 const BASE_URL = process.env.LANGWATCH_BASE_URL ?? "http://localhost:5560";
 const API_KEY = process.env.LANGWATCH_API_KEY ?? "";
@@ -41,6 +43,43 @@ export const spendEvents = new SpendEventsApiService({
   apiKey: API_KEY,
 });
 
+// Teams and projects are organization-scoped too: they are what a project
+// belongs to, so neither of them is addressed from inside one.
+export const teams = new TeamsApiService({ endpoint: BASE_URL, apiKey: API_KEY });
+
+export const projects = new ProjectsApiService({
+  endpoint: BASE_URL,
+  apiKey: API_KEY,
+});
+
+/**
+ * What a signup provisions.
+ *
+ * - `virtual_key`: one virtual key per customer, under the control project.
+ *   The key is the whole tenant boundary and every cap hangs off it.
+ * - `project`: a LangWatch project per customer, under one stable team, with
+ *   the key scoped to that project and pointed at it, so each customer's
+ *   traces and costs land in a project of their own.
+ *
+ * LANGWATCH_PROJECT_ID stays the control project either way: it is what the
+ * virtual key and budget calls authenticate as. A customer's own project is
+ * data in those request bodies, never a change of who is calling.
+ */
+export type ProvisionMode = "virtual_key" | "project";
+
+export const PROVISION_MODE: ProvisionMode =
+  process.env.LANGWATCH_PROVISION_MODE === "project" ? "project" : "virtual_key";
+
+/** The team every customer project goes under. `pnpm setup:team` fills it in. */
+const TEAM_ID = process.env.LANGWATCH_TEAM_ID ?? "";
+
+/**
+ * What a customer project is tagged with: the stack that produces its
+ * traces, which is this app, not whatever the customer builds on top of it.
+ */
+const PROJECT_LANGUAGE = "typescript";
+const PROJECT_FRAMEWORK = "vercel_ai";
+
 export const CAPS = {
   hardUsd: "5.00",
   softUsd: "2.50",
@@ -57,6 +96,10 @@ export interface ProvisionedTenant {
   cycleAnchorAt: string;
   /** True when the platform replayed an earlier signup instead of creating. */
   replayed: boolean;
+  /** The customer's own project in `project` mode; null in `virtual_key` mode. */
+  projectId: string | null;
+  /** True when this signup created that project rather than finding it. */
+  projectCreated: boolean;
 }
 
 /**
@@ -67,18 +110,83 @@ export interface ProvisionedTenant {
  * The name is the identity a customer types, so it is normalized the same way
  * the workspace uniqueness check normalizes it: case and surrounding space are
  * not what makes two signups different.
+ *
+ * The mode namespaces the keys, because it decides what a signup creates: the
+ * same customer provisioned the other way asks for different resources, and a
+ * key that meant one body must never be replayed for another.
  */
 function signupKey(name: string, resource: string): string {
   const identity = name.trim().toLowerCase().replace(/\s+/g, "-");
-  return `acme-agents:signup:${identity}:${resource}`;
+  const mode = PROVISION_MODE === "project" ? "project:" : "";
+  return `acme-agents:signup:${mode}${identity}:${resource}`;
+}
+
+interface CustomerProject {
+  id: string;
+  /** True when this call created it, false when it found one already there. */
+  created: boolean;
 }
 
 /**
- * The four calls a signup makes.
+ * The customer's own project, created once and found again after that.
  *
- * 1. Mint a virtual key. The VK IS the tenant boundary: its secret is the
- *    tenant's gateway credential, and every budget and spend row hangs off
- *    its id. The secret comes back exactly once; store it like a password.
+ * Project creates take no idempotency key, so the name carries that weight
+ * instead: a retried signup finds the project the first attempt made rather
+ * than stacking a second one beside it. The name is the customer's own, the
+ * same identity the workspace uniqueness check and the idempotency keys are
+ * derived from, and the listing never returns archived projects, so a
+ * customer that was rolled back is provisioned fresh.
+ */
+async function ensureCustomerProject(name: string): Promise<CustomerProject> {
+  if (!TEAM_ID) {
+    throw new Error(
+      "LANGWATCH_TEAM_ID is not set. Run `pnpm setup:team` once before" +
+        " provisioning customers in project mode.",
+    );
+  }
+  const existing = await findProjectByName(name);
+  if (existing) return { id: existing.id, created: false };
+
+  // The create also mints a service key for the new project. It is
+  // deliberately not stored: the customer's runtime credential is the
+  // virtual key, and one credential per tenant is the whole point.
+  const created = await projects.create({
+    name,
+    teamId: TEAM_ID,
+    language: PROJECT_LANGUAGE,
+    framework: PROJECT_FRAMEWORK,
+  });
+  return { id: created.id, created: true };
+}
+
+/** Walk the project listing to exhaustion, so a match on page two counts. */
+async function findProjectByName(name: string) {
+  const limit = 100;
+  for (let page = 1; ; page += 1) {
+    const { data, pagination } = await projects.list({ page, limit });
+    const match = data.find((project) => project.name === name);
+    if (match) return match;
+    if (data.length < limit || page * limit >= pagination.total) return null;
+  }
+}
+
+/** Archive a project this signup created and could not hand to anyone. */
+export function archiveProject(projectId: string) {
+  return projects.archive(projectId);
+}
+
+/**
+ * The four calls a signup makes, or five in project mode.
+ *
+ * 0. In `project` mode only: create the customer's own project under the
+ *    team from LANGWATCH_TEAM_ID. Everything below then hangs off that
+ *    project instead of off the key, and the key is scoped to it and sends
+ *    its traces there, so the customer's traffic, spend and traces are one
+ *    thing the platform separates rather than something this app filters.
+ * 1. Mint a virtual key. The VK IS the tenant boundary in `virtual_key`
+ *    mode: its secret is the tenant's gateway credential, and every budget
+ *    and spend row hangs off its id. The secret comes back exactly once;
+ *    store it like a password.
  * 2. A hard cap: `on_breach: "block"` on a `manual` window. A manual window
  *    accrues until an explicit reset, which is how a billing period closes
  *    without ever mutating recorded spend.
@@ -119,10 +227,23 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
     replayed = true;
   };
 
+  // In project mode the customer's project comes first: the key is scoped to
+  // it and points its traces at it, and the caps are attached to it.
+  const project =
+    PROVISION_MODE === "project" ? await ensureCustomerProject(name) : null;
+
   const minted = await virtualKeys.create(
     {
       name,
       description: `Tenant key for ${name} (ACME Agents signup)`,
+      ...(project
+        ? {
+            scopes: [{ scope_type: "project" as const, scope_id: project.id }],
+            // Where this key's traces and costs land. Not a scope: it grants
+            // the key nothing, it decides which project sees the traffic.
+            trace_project_id: project.id,
+          }
+        : {}),
     },
     { idempotencyKey: signupKey(name, "virtual-key"), onIdempotentReplay },
   );
@@ -130,9 +251,19 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
   // The tenant's own birth instant, and the same value on every retry.
   const cycleAnchorAt = minted.virtual_key.created_at;
 
+  // What the caps hang off. A project cap covers every key that ever points
+  // at that project, so in project mode the tenant boundary outlives any one
+  // key; in virtual key mode the key IS the boundary.
+  const tenantScope = project
+    ? ({ kind: "project", project_id: project.id } as const)
+    : ({ kind: "virtual_key", virtual_key_id: virtualKeyId } as const);
+  const seatScope = project
+    ? ({ kind: "attributed_user", anchor_project_id: project.id } as const)
+    : ({ kind: "attributed_user", anchor_virtual_key_id: virtualKeyId } as const);
+
   const hardCap = await budgets.create(
     {
-      scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
+      scope: tenantScope,
       name: `${name} hard cap`,
       window: "manual",
       limit_usd: CAPS.hardUsd,
@@ -143,7 +274,7 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
 
   const softCap = await budgets.create(
     {
-      scope: { kind: "virtual_key", virtual_key_id: virtualKeyId },
+      scope: tenantScope,
       name: `${name} soft cap`,
       window: "manual",
       limit_usd: CAPS.softUsd,
@@ -154,7 +285,7 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
 
   const perUser = await budgets.create(
     {
-      scope: { kind: "attributed_user", anchor_virtual_key_id: virtualKeyId },
+      scope: seatScope,
       name: `${name} per-seat allowance`,
       window: "month",
       limit_usd: CAPS.perSeatUsd,
@@ -172,6 +303,8 @@ export async function provisionTenant(name: string): Promise<ProvisionedTenant> 
     perUserBudgetId: perUser.id,
     cycleAnchorAt: perUser.cycle_anchor_at ?? cycleAnchorAt,
     replayed,
+    projectId: project?.id ?? null,
+    projectCreated: project?.created ?? false,
   };
 }
 
@@ -201,10 +334,16 @@ export interface BudgetSnapshot {
   cycle_anchor_at: string | null;
 }
 
-export interface BudgetsByKey {
-  /** Virtual key id to the caps that apply to the whole tenant. */
-  perKey: Map<string, BudgetSnapshot[]>;
-  /** Virtual key id to the per-seat template anchored to it. */
+/**
+ * Caps indexed by the id they hang off, which is the customer's project when
+ * it has one and its virtual key otherwise. Both are "the tenant" as far as
+ * a cap is concerned, so both land in the same map and a meter reads it with
+ * one lookup whichever way the customer was provisioned.
+ */
+export interface BudgetsByAnchor {
+  /** Tenant anchor id to the caps that apply to the whole tenant. */
+  perTenant: Map<string, BudgetSnapshot[]>;
+  /** Tenant anchor id to the per-seat template anchored to it. */
   perSeatTemplate: Map<string, BudgetSnapshot>;
   /** False when the platform could not total spend; show it as unknown. */
   spendAvailable: boolean;
@@ -219,9 +358,9 @@ export interface BudgetsByKey {
  * Money is taken as the integer nano-USD fields the rows carry, never parsed
  * out of the decimal display strings beside them.
  */
-export async function loadBudgets(): Promise<BudgetsByKey> {
+export async function loadBudgets(): Promise<BudgetsByAnchor> {
   const rows = await budgets.list();
-  const perKey = new Map<string, BudgetSnapshot[]>();
+  const perTenant = new Map<string, BudgetSnapshot[]>();
   const perSeatTemplate = new Map<string, BudgetSnapshot>();
 
   for (const budget of rows) {
@@ -240,29 +379,30 @@ export async function loadBudgets(): Promise<BudgetsByKey> {
     };
     if (budget.archived_at) continue;
 
-    // attributed_user rows are templates anchored to a virtual key: one row
-    // that defines the allowance every seat of that tenant gets.
+    // attributed_user rows are templates anchored to a virtual key or to a
+    // project: one row that defines the allowance every seat of that tenant
+    // gets. Either way the anchor is the scope id.
     if (budget.scope_type === "attributed_user") {
       perSeatTemplate.set(budget.scope_id, snapshot);
       continue;
     }
-    if (budget.scope_type === "virtual_key") {
-      const existing = perKey.get(budget.scope_id) ?? [];
+    if (budget.scope_type === "virtual_key" || budget.scope_type === "project") {
+      const existing = perTenant.get(budget.scope_id) ?? [];
       existing.push(snapshot);
-      perKey.set(budget.scope_id, existing);
+      perTenant.set(budget.scope_id, existing);
     }
   }
 
   // Blocking caps first, then the widest limit, so the meter leads with the
   // number that actually stops traffic.
-  for (const list of perKey.values()) {
+  for (const list of perTenant.values()) {
     list.sort((left, right) => {
       if (left.on_breach !== right.on_breach) return left.on_breach === "block" ? -1 : 1;
       return (right.limit_nano_usd ?? 0) - (left.limit_nano_usd ?? 0);
     });
   }
 
-  return { perKey, perSeatTemplate, spendAvailable: spendAvailableAcross(rows) };
+  return { perTenant, perSeatTemplate, spendAvailable: spendAvailableAcross(rows) };
 }
 
 /**

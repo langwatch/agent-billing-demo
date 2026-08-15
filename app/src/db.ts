@@ -24,7 +24,26 @@ export interface Customer {
   soft_cap_budget_id: string;
   /** The attributed_user template that caps every seat of this tenant. */
   per_user_budget_id: string;
+  /**
+   * The customer's own LangWatch project, in `project` provisioning mode:
+   * where its traces and costs land, and what its caps are scoped to. Empty
+   * in `virtual_key` mode, where the virtual key is the whole boundary.
+   */
+  langwatch_project_id: string;
   created_at: string;
+}
+
+/**
+ * What this customer's caps and per-seat allowance hang off on the platform:
+ * its own project when it has one, its virtual key otherwise. The billing
+ * ledger stays keyed by the virtual key either way, because that is the id a
+ * billing event carries.
+ */
+export function tenantAnchor(customer: {
+  virtual_key_id: string;
+  langwatch_project_id: string;
+}): string {
+  return customer.langwatch_project_id || customer.virtual_key_id;
 }
 
 export interface AppUser {
@@ -99,6 +118,7 @@ export function openDb(path: string): AppDatabase {
   addColumn(db, "customers", "soft_cap_budget_id", "TEXT NOT NULL DEFAULT ''");
   addColumn(db, "customers", "per_user_budget_id", "TEXT NOT NULL DEFAULT ''");
   addColumn(db, "customers", "created_at", "TEXT NOT NULL DEFAULT ''");
+  addColumn(db, "customers", "langwatch_project_id", "TEXT NOT NULL DEFAULT ''");
   addColumn(db, "agents", "created_at", "TEXT NOT NULL DEFAULT ''");
 
   // Seats are unique per tenant, not globally: two customers may both have

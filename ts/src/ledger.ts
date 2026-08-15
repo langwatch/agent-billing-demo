@@ -169,7 +169,17 @@ export class Ledger {
     return true;
   }
 
-  /** Per-virtual-key totals over a window, for reconciliation checksums. */
+  /**
+   * Per-virtual-key totals over a window, for reconciliation checksums.
+   *
+   * Only requests that reached an outcome count. `admitted` says the gateway
+   * let a request through and the outcome has not arrived, and `settled` says
+   * the outcome never arrived; neither carries a cost, and the platform's
+   * `event_count` leaves both out. Counting them here makes every window
+   * that holds one diverge by exactly that many events while the money
+   * matches to the nano, and the walk then reports a gap it cannot close,
+   * because there is no missing row to pull.
+   */
   totalsByVirtualKey(fromIso: string, toIso: string) {
     return this.db
       .prepare(
@@ -177,7 +187,7 @@ export class Ledger {
                 COUNT(*) AS event_count,
                 COALESCE(SUM(cost_nano_usd), 0) AS cost_nano_usd
          FROM ledger
-         WHERE status != 'settled'
+         WHERE status NOT IN ('settled', 'admitted')
            AND occurred_at >= ? AND occurred_at < ?
          GROUP BY virtual_key_id`,
       )

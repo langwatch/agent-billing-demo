@@ -18,7 +18,7 @@
     "ai": "^4.3.0",
     "better-sqlite3": "^11.8.0",
     "express": "^4.21.0",
-    "langwatch": "^1.4.0"
+    "langwatch": "^1.5.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",

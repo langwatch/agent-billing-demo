@@ -209,6 +209,14 @@ APP_PY_QUEUE_URL=...   # each receiver needs its OWN queue: two consumers on
 TS_QUEUE_URL=...       # one queue split the messages rather than both seeing
 PY_QUEUE_URL=...       # everything
 
+# How LangWatch writes to those queues. The consumers read with your usual
+# AWS chain; LangWatch runs elsewhere and needs an identity of its own.
+DEMO_SQS_ROLE_ARN=arn:aws:iam::<account>:role/<role>   # preferred
+DEMO_SQS_EXTERNAL_ID=<the id in your trust policy>
+# or, when a role is not possible:
+DEMO_SQS_ACCESS_KEY_ID=...
+DEMO_SQS_SECRET_ACCESS_KEY=...
+
 DEMO_TRANSPORT=sqs pnpm setup:webhook
 DEMO_TRANSPORT=sqs pnpm dev            # the app drains its queue in-process
 pnpm --filter @acme/integration-ts exec tsx src/queue-consumer.ts

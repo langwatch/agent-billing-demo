@@ -149,12 +149,22 @@ class Ledger:
         return True
 
     def totals_by_virtual_key(self, from_iso: str, to_iso: str) -> list[tuple]:
-        """(virtual_key_id, event_count, cost_nano_usd) per key, settled excluded."""
+        """(virtual_key_id, event_count, cost_nano_usd) per key.
+
+        Only requests that reached an outcome count. ``admitted`` says the
+        gateway let a request through and the outcome has not arrived, and
+        ``settled`` says the outcome never arrived; neither carries a cost,
+        and the platform's ``event_count`` leaves both out. Counting them
+        here makes every window that holds one diverge by exactly that many
+        events while the money matches to the nano, and the walk then
+        reports a gap it cannot close, because there is no missing row.
+        """
         return self.db.execute(
             """
             SELECT virtual_key_id, COUNT(*), COALESCE(SUM(cost_nano_usd), 0)
             FROM ledger
-            WHERE status != 'settled' AND occurred_at >= ? AND occurred_at < ?
+            WHERE status NOT IN ('settled', 'admitted')
+              AND occurred_at >= ? AND occurred_at < ?
             GROUP BY virtual_key_id
             """,
             (from_iso, to_iso),

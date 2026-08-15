@@ -57,6 +57,37 @@ const RECEIVERS = [
   },
 ];
 
+/**
+ * How LangWatch proves it may WRITE to the queue.
+ *
+ * This is not the same credential the consumers read with. The consumers run
+ * here and use the usual AWS chain; LangWatch runs somewhere else and needs
+ * an identity of its own. A role to assume is the better answer, because
+ * nothing long-lived is stored and the trust policy stays yours to revoke.
+ *
+ * Only a deployment that has turned ambient credentials on can take a queue
+ * with no credentials at all, and no shared deployment does: on that path
+ * one tenant could name another tenant's queue. So a queue endpoint against
+ * LangWatch Cloud always carries one of these two.
+ */
+function queueCredentials() {
+  const roleArn = process.env.DEMO_SQS_ROLE_ARN ?? "";
+  const externalId = process.env.DEMO_SQS_EXTERNAL_ID ?? "";
+  const accessKeyId = process.env.DEMO_SQS_ACCESS_KEY_ID ?? "";
+  const secretAccessKey = process.env.DEMO_SQS_SECRET_ACCESS_KEY ?? "";
+
+  if (roleArn) {
+    return {
+      role_arn: roleArn,
+      ...(externalId ? { external_id: externalId } : {}),
+    };
+  }
+  if (accessKeyId && secretAccessKey) {
+    return { access_key_id: accessKeyId, secret_access_key: secretAccessKey };
+  }
+  return null;
+}
+
 /** The address this run registers, and the shape the create body takes. */
 function destinationOf(receiver: (typeof RECEIVERS)[number]) {
   if (TRANSPORT !== "sqs") {
@@ -69,11 +100,20 @@ function destinationOf(receiver: (typeof RECEIVERS)[number]) {
     );
     process.exit(1);
   }
+  const credentials = queueCredentials();
+  if (!credentials) {
+    console.error(
+      "DEMO_TRANSPORT=sqs needs credentials LangWatch can write the queue with. " +
+        "Set DEMO_SQS_ROLE_ARN (and DEMO_SQS_EXTERNAL_ID) for a role to assume, " +
+        "or DEMO_SQS_ACCESS_KEY_ID with DEMO_SQS_SECRET_ACCESS_KEY.",
+    );
+    process.exit(1);
+  }
   return {
     address: receiver.queueUrl,
     body: {
       destination_kind: "sqs" as const,
-      sqs: { queue_url: receiver.queueUrl },
+      sqs: { queue_url: receiver.queueUrl, ...credentials },
     },
   };
 }

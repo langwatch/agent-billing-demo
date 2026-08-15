@@ -33,8 +33,8 @@ importers:
         specifier: ^4.21.0
         version: 4.22.2
       langwatch:
-        specifier: file:../../../worktrees/sqs-destination/sdks/typescript
-        version: file:../../worktrees/sqs-destination/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))
+        specifier: ^1.4.0
+        version: 1.4.0(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.0
@@ -88,8 +88,8 @@ importers:
         specifier: ^4.21.0
         version: 4.22.2
       langwatch:
-        specifier: file:../../../worktrees/sqs-destination/sdks/typescript
-        version: file:../../worktrees/sqs-destination/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))
+        specifier: ^1.4.0
+        version: 1.4.0(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0))
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.11
@@ -1651,8 +1651,8 @@ packages:
     resolution: {integrity: sha512-eTIzlVOSUR+JxdDFepEYcBMtZ9Qqdef+rnzWdRZuMbOywu5tO2w2N7rqjoANZ5k9vywhL6Br1VRjUIgTQx4E8w==}
     engines: {node: '>=6'}
 
-  langwatch@file:../../worktrees/sqs-destination/sdks/typescript:
-    resolution: {directory: ../../worktrees/sqs-destination/sdks/typescript, type: directory}
+  langwatch@1.4.0:
+    resolution: {integrity: sha512-69KegQ6At60kmIVwJn+Uk/p97bHR917FhFVjywtkAQGpekUKZuzjvDH8b02lTkl9LnO2uO01uZMYU9v+rmCG4g==}
     engines: {node: '>=20', pnpm: '>=8'}
     hasBin: true
     peerDependencies:
@@ -3934,7 +3934,7 @@ snapshots:
 
   kleur@3.0.3: {}
 
-  langwatch@file:../../worktrees/sqs-destination/sdks/typescript(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0)):
+  langwatch@1.4.0(@ai-sdk/openai@1.3.24(zod@4.4.3))(@opentelemetry/context-async-hooks@2.10.0(@opentelemetry/api@1.9.0)):
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/api-logs': 0.205.0
